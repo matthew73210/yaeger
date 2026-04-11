@@ -1,8 +1,7 @@
 import "./style.css";
 import van from "vanjs-core";
 import { roastApp } from "./roast";
-import { profile, ProfileControl } from "./profiling.ts";
-import { PIDController } from "./pid.ts";
+import { ProfileControl } from "./profiling.ts";
 import { connectionStatus, lastMessage, lastUpdate } from "./websocket";
 import { getBasicAuthHeaderValue } from "./auth";
 
@@ -18,12 +17,9 @@ interface DeviceInfo {
   csrfToken?: string;
 }
 
-const { button, div, input, p, span, h1, h2 } = van.tags;
+const { aside, article, button, div, h1, h2, input, main, nav, p, section, small, span } = van.tags;
 
-// State variables
-const pidPFactor = van.state(1.0);
-const pidIFactor = van.state(0.1);
-const pidDFactor = van.state(0.01);
+const activePanel = van.state<"home" | "roasting" | "update">("home");
 
 // Wifi
 const ssidField = van.state("");
@@ -36,6 +32,7 @@ const csrfToken = van.state("");
 
 const appVersion = __APP_VERSION__;
 const buildTimestamp = new Date(__BUILD_TIMESTAMP__).toLocaleString();
+const roastingView = roastApp();
 
 const refreshDeviceInfo = async () => {
   try {
@@ -90,70 +87,35 @@ const updateWifiSettings = async () => {
   }
 };
 
-// PID Configuration
-const PIDConfig = () =>
-  div(
-    "PID Factors",
-    p(),
-    "P:",
-    input({
-      type: "number",
-      value: pidPFactor.val,
-      oninput: (e: Event) => {
-        pidPFactor.val = parseFloat((e.target as HTMLInputElement).value) || 0;
-      },
-    }),
-    "I:",
-    input({
-      type: "number",
-      value: pidIFactor.val,
-      oninput: (e: Event) => {
-        pidIFactor.val = parseFloat((e.target as HTMLInputElement).value) || 0;
-      },
-    }),
-    "D:",
-    input({
-      type: "number",
-      value: pidDFactor.val,
-      oninput: (e: Event) => {
-        pidDFactor.val = parseFloat((e.target as HTMLInputElement).value) || 0;
-      },
-    }),
-  );
-
-// Connection Status Display
 const ConnectionStatus = () =>
   div(
-    { class: "connection-status" },
-    "Connection Status: ",
+    { class: "status-pill" },
+    span("Connection:"),
     span(
       {
-        style: () =>
-          `color: ${
-            connectionStatus.val === "Connected"
-              ? "green"
-              : connectionStatus.val === "Error"
-                ? "red"
-                : "orange"
-          }`,
+        class: () =>
+          connectionStatus.val === "Connected"
+            ? "status-ok"
+            : connectionStatus.val === "Error"
+              ? "status-bad"
+              : "status-warn",
       },
       () => connectionStatus.val,
     ),
   );
 
-// Sensor Data Display
 const SensorData = () =>
-  div(
-    { class: "sensor-data" },
-    "Current Readings:",
+  article(
+    { class: "surface" },
+    h2("Live Sensors"),
     p("ET: ", () => lastMessage.val?.ET ?? "N/A", "°C"),
     p("BT: ", () => lastMessage.val?.BT ?? "N/A", "°C"),
     p("Last update: ", () => lastUpdate.val?.toString() ?? "N/A"),
   );
 
 const VersionAndNetworkInfo = () =>
-  div(
-    { class: "section" },
+  article(
+    { class: "surface" },
     h2("Version & Network Info"),
     p("Web UI version: ", appVersion),
     p("Web UI build: ", buildTimestamp),
@@ -171,7 +133,7 @@ const VersionAndNetworkInfo = () =>
     () =>
       deviceInfoError.val
         ? p(
-            { style: "color: #b91c1c;" },
+            { class: "status-bad" },
             "Could not load network info: ",
             deviceInfoError.val,
           )
@@ -179,53 +141,99 @@ const VersionAndNetworkInfo = () =>
     button({ onclick: refreshDeviceInfo }, "Refresh Info"),
   );
 
-// Start page UI
-const startPage = div(
-  div(
-    { class: "start-page" },
-    h1("Yaeger Roaster Control"),
-    ConnectionStatus,
-    SensorData,
-    VersionAndNetworkInfo,
-    div({ class: "section" }, h2("Profile Selection"), ProfileControl),
-    div({ class: "section" }, h2("PID Settings"), PIDConfig),
+const wifiSettings = () =>
+  article(
+    { class: "surface" },
+    h2("Wifi Settings"),
+    p("Wifi SSID"),
+    input({
+      type: "text",
+      oninput: (e: Event) => {
+        ssidField.val = (e.target as HTMLInputElement).value;
+      },
+    }),
+    p("Wifi Password"),
+    input({
+      type: "password",
+      oninput: (e: Event) => {
+        passField.val = (e.target as HTMLInputElement).value;
+      },
+    }),
+    button({ onclick: updateWifiSettings }, "Update Wifi"),
+  );
+
+const HomePanel = () =>
+  section(
+    { class: "panel" },
+    div({ class: "panel-header" }, h1("Home"), p("Overview and quick health checks.")),
+    div({ class: "panel-grid" }, SensorData(), VersionAndNetworkInfo()),
+  );
+
+const RoastingPanel = () =>
+  section(
+    { class: "panel" },
     div(
-      { class: "section" },
-      h2("Wifi Settings"),
-      p(),
-      "Wifi ssid:",
-      input({
-        type: "text",
-        oninput: (e: Event) => {
-          ssidField.val = (e.target as HTMLInputElement).value;
-        },
-      }),
-      p(),
-      "Wifi pass (if any)",
-      input({
-        type: "password",
-        oninput: (e: Event) => {
-          passField.val = (e.target as HTMLInputElement).value;
-        },
-      }),
-      p(),
-      button({ onclick: updateWifiSettings }, "Update Wifi"),
+      { class: "panel-header" },
+      h1("Roasting"),
+      p("Live roast controls, charting and event markers."),
     ),
+    article({ class: "surface roast-surface" }, roastingView),
+  );
+
+const UpdatePanel = () =>
+  section(
+    { class: "panel" },
+    div({ class: "panel-header" }, h1("Update"), p("Device and profile management.")),
     div(
-      { class: "section" },
-      button(
-        {
-          onclick: () => {
-            // Navigate to roast page
-            document.getElementById("app")!.innerHTML = "";
-            van.add(document.getElementById("app")!, roastApp());
+      { class: "panel-grid" },
+      wifiSettings(),
+      article({ class: "surface" }, h2("Profile"), ProfileControl),
+    ),
+  );
+
+const App = () =>
+  div(
+    { class: "app-shell" },
+    aside(
+      { class: "side-nav" },
+      div({ class: "brand" }, small("Yaeger"), h1("Roast Console")),
+      ConnectionStatus,
+      nav(
+        { class: "nav-list" },
+        button(
+          {
+            class: () => (activePanel.val === "home" ? "active" : ""),
+            onclick: () => (activePanel.val = "home"),
           },
-        },
-        "Start Roasting",
+          span("Home"),
+          small("Overview"),
+        ),
+        button(
+          {
+            class: () => (activePanel.val === "roasting" ? "active" : ""),
+            onclick: () => (activePanel.val = "roasting"),
+          },
+          span("Roasting"),
+          small("Controls & graph"),
+        ),
+        button(
+          {
+            class: () => (activePanel.val === "update" ? "active" : ""),
+            onclick: () => (activePanel.val = "update"),
+          },
+          span("Update"),
+          small("Settings"),
+        ),
       ),
     ),
-  ),
-);
+    main(
+      { class: "main-content" },
+      () => {
+        if (activePanel.val === "home") return HomePanel();
+        if (activePanel.val === "roasting") return RoastingPanel();
+        return UpdatePanel();
+      },
+    ),
+  );
 
-// Attach UI to DOM
-van.add(document.getElementById("app")!, startPage);
+van.add(document.getElementById("app")!, App());

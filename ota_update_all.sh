@@ -146,9 +146,13 @@ if [[ -z "${YAEGER_OTA_PASSWORD:-}" ]]; then
 fi
 ensure_ota_venv
 
-echo "Building miniweb assets..."
+echo "Cleaning previous build outputs for a fresh rebuild..."
+rm -rf miniweb/dist
+run_pio_with_auto_deps -e "$PIO_ENV" -t clean
+
+echo "Building miniweb assets from a clean state..."
 pushd miniweb >/dev/null
-npm install --no-audit --no-fund
+npm ci --no-audit --no-fund
 npm run build
 popd >/dev/null
 
