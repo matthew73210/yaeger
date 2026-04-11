@@ -20,5 +20,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src/main.tsx", "src/App.tsx", "src/auth.ts", "src/model.ts", "src/websocket.ts", "src/vite-env.d.ts"]
+  "include": ["src"]
 }
