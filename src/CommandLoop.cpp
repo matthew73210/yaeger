@@ -122,6 +122,10 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc,
       client->text("{\"error\":\"invalid schema: cooldownFanSpeed must be numeric\"}");
       return false;
     }
+    if (!doc["heaterCyclePeriodMs"].isNull() && !doc["heaterCyclePeriodMs"].is<long>()) {
+      client->text("{\"error\":\"invalid schema: heaterCyclePeriodMs must be numeric\"}");
+      return false;
+    }
   }
 
   if (strncmp(command, "setPidControl", 13) == 0) {
@@ -302,6 +306,16 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         logf("cooldownFanSpeed: %d\n", clampedCooldownFanSpeed);
         preferences.putLong("coolFanSpeed", clampedCooldownFanSpeed);
       }
+      if (!doc["heaterCyclePeriodMs"].isNull()) {
+        long heaterCyclePeriodMs = doc["heaterCyclePeriodMs"].as<long>();
+        if (heaterCyclePeriodMs < 100) {
+          heaterCyclePeriodMs = 100;
+        } else if (heaterCyclePeriodMs > 5000) {
+          heaterCyclePeriodMs = 5000;
+        }
+        preferences.putLong("heaterCycleMs", heaterCyclePeriodMs);
+        setHeaterCyclePeriodMs(heaterCyclePeriodMs);
+      }
     }
 
     if (command != NULL &&
@@ -315,6 +329,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       dataObj["pidKi"] = preferences.getDouble("pidKi", 0.1);
       dataObj["pidKd"] = preferences.getDouble("pidKd", 0.01);
       dataObj["cooldownFanSpeed"] = preferences.getLong("coolFanSpeed", 65);
+      dataObj["heaterCyclePeriodMs"] = getHeaterCyclePeriodMs();
       dataObj["setpoint"] = pidSetpoint;
       dataObj["pidEnabled"] = pidEnabled;
       dataObj["pidTarget"] = pidTargetToString(pidTarget);
@@ -371,6 +386,8 @@ void setupMainLoop(AsyncWebSocket *ws) {
   pidTarget = configuredTarget == "ET" ? PidTargetSensor::ET : PidTargetSensor::BT;
   pidEnabled = false;
   preferences.putBool("pidEnabled", false);
+  long savedHeaterCyclePeriodMs = preferences.getLong("heaterCycleMs", 1000);
+  setHeaterCyclePeriodMs(savedHeaterCyclePeriodMs);
   ws->onEvent(onWsEvent);
 }
 

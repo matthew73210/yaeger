@@ -9,7 +9,7 @@ void initHeater() {
 
 static int heaterPower = 0;
 // Refresh period in milliseconds
-const unsigned long refreshPeriod = 1000; // 1 second (1000 milliseconds)
+static unsigned long refreshPeriod = 1000; // 1 second (1000 milliseconds)
 const float powerLimitFactor = 0.9;
 
 // Variables to keep track of time
@@ -27,6 +27,20 @@ void setHeaterPower(int power) {
   logf("Heater power set to %d%%\n", power);
   onTime = (refreshPeriod * heaterPower) / 100;
 }
+
+void setHeaterCyclePeriodMs(unsigned long periodMs) {
+  if (periodMs < 100) {
+    periodMs = 100;
+  } else if (periodMs > 5000) {
+    periodMs = 5000;
+  }
+
+  refreshPeriod = periodMs;
+  onTime = (refreshPeriod * heaterPower) / 100;
+  logf("Heater cycle period set to %lu ms\n", refreshPeriod);
+}
+
+unsigned long getHeaterCyclePeriodMs() { return refreshPeriod; }
 
 // Update the heater SSR state
 // where 100% is always turned on

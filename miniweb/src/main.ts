@@ -18,9 +18,14 @@ interface DeviceInfo {
   csrfToken?: string;
 }
 
+interface ControlSettings {
+  heaterCyclePeriodMs: number;
+  heaterCyclePeriodOptionsMs: number[];
+}
+
 type AppTab = "home" | "roast" | "logs" | "settings";
 
-const { button, div, input, p, span, h1, h2 } = van.tags;
+const { button, div, input, p, span, h1, h2, select, option } = van.tags;
 
 // State variables
 const pidPFactor = van.state(1.0);
@@ -36,6 +41,8 @@ const activeTab = van.state<AppTab>("home");
 const deviceInfo = van.state<DeviceInfo | null>(null);
 const deviceInfoError = van.state<string | null>(null);
 const csrfToken = van.state("");
+const heaterCyclePeriodMs = van.state(1000);
+const heaterCycleOptionsMs = van.state<number[]>([250, 500, 1000, 2000]);
 
 const appVersion = __APP_VERSION__;
 const buildTimestamp = new Date(__BUILD_TIMESTAMP__).toLocaleString();
@@ -62,6 +69,25 @@ const refreshDeviceInfo = async () => {
 
 void refreshDeviceInfo();
 
+const refreshControlSettings = async () => {
+  try {
+    const response = await fetch(`http://${location.host}/api/control-settings`);
+    if (!response.ok) {
+      throw new Error(`API returned ${response.status}`);
+    }
+
+    const settings = (await response.json()) as ControlSettings;
+    heaterCyclePeriodMs.val = settings.heaterCyclePeriodMs;
+    if (settings.heaterCyclePeriodOptionsMs.length > 0) {
+      heaterCycleOptionsMs.val = settings.heaterCyclePeriodOptionsMs;
+    }
+  } catch (error) {
+    console.error("Failed to refresh control settings:", error);
+  }
+};
+
+void refreshControlSettings();
+
 const updateWifiSettings = async () => {
   const ssid = ssidField.val;
   const pass = passField.val;
@@ -81,6 +107,32 @@ const updateWifiSettings = async () => {
         "Wifi settings updated!\nPlease restart for the new settings to take effect",
       );
       await refreshDeviceInfo();
+    } else {
+      alert(`Something happened: ${response.status}`);
+    }
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      alert(`Error: ${error.message}`);
+    } else {
+      alert("An unknown error occurred");
+    }
+  }
+};
+
+const updateControlSettings = async () => {
+  try {
+    const response = await fetch(`http://${location.host}/api/control-settings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: getBasicAuthHeaderValue(),
+        "X-Yaeger-CSRF": csrfToken.val,
+      },
+      body: JSON.stringify({ heaterCyclePeriodMs: heaterCyclePeriodMs.val }),
+    });
+    if (response.ok) {
+      alert("Duty cycle settings updated.");
+      await refreshControlSettings();
     } else {
       alert(`Something happened: ${response.status}`);
     }
@@ -198,6 +250,35 @@ const SettingsPanel = () =>
     VersionAndNetworkInfo,
     div({ class: "section" }, h2("Profile Selection"), ProfileControl),
     PIDConfig,
+    div(
+      { class: "section" },
+      h2("Duty Cycle Settings"),
+      div(
+        { class: "form-grid" },
+        p("Heater cycle period"),
+        select(
+          {
+            value: () => heaterCyclePeriodMs.val.toString(),
+            oninput: (e: Event) => {
+              heaterCyclePeriodMs.val = parseInt(
+                (e.target as HTMLSelectElement).value,
+                10,
+              );
+            },
+          },
+          () =>
+            heaterCycleOptionsMs.val.map((optionMs) =>
+              option({ value: optionMs.toString() }, `${optionMs} ms`),
+            ),
+        ),
+      ),
+      p(
+        { class: "muted" },
+        () =>
+          `At 50% heater output this equals ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms ON and ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms OFF.`,
+      ),
+      button({ onclick: () => void updateControlSettings() }, "Save Duty Cycle"),
+    ),
     div(
       { class: "section" },
       h2("Wifi Settings"),
