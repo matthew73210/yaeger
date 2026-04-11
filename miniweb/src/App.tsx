@@ -6,7 +6,7 @@ import type { YaegerMessage } from "./model";
 declare const __APP_VERSION__: string;
 declare const __BUILD_TIMESTAMP__: string;
 
-type AppTab = "home" | "roast" | "logs" | "settings";
+type AppTab = "home" | "roast" | "autotune" | "logs" | "settings";
 
 interface DeviceInfo {
   firmwareVersion: string;
@@ -104,6 +104,7 @@ export function App() {
         <h2 class="tabs-title">Yaeger</h2>
         <button class={`tab-btn ${activeTab === "home" ? "active" : ""}`} onClick={() => setActiveTab("home")}>Home</button>
         <button class={`tab-btn ${activeTab === "roast" ? "active" : ""}`} onClick={() => setActiveTab("roast")}>Roast</button>
+        <button class={`tab-btn ${activeTab === "autotune" ? "active" : ""}`} onClick={() => setActiveTab("autotune")}>Autotune</button>
         <button class={`tab-btn ${activeTab === "logs" ? "active" : ""}`} onClick={() => setActiveTab("logs")}>Logs</button>
         <button class={`tab-btn ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
@@ -111,6 +112,7 @@ export function App() {
       <div class="tab-content">
         {activeTab === "home" && <HomeTab status={status} message={message} updatedAt={updatedAt} />}
         {activeTab === "roast" && <RoastTab fan={fan} heater={heater} setFan={setFan} setHeater={setHeater} />}
+        {activeTab === "autotune" && <AutotuneTab message={message} />}
         {activeTab === "logs" && <LogsTab />}
         {activeTab === "settings" && (
           <SettingsTab
@@ -186,6 +188,75 @@ function RoastTab({ fan, heater, setFan, setHeater }: { fan: number; heater: num
             sendCommand({ id: 1, BurnerVal: value });
           }}
         />
+      </div>
+    </div>
+  );
+}
+
+
+function AutotuneTab({ message }: { message: YaegerMessage | null }) {
+  const [target, setTarget] = useState<"BT" | "ET" | "simBT">("BT");
+  const [method, setMethod] = useState<"ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot">("ziegler-nichols");
+  const [setpoint, setSetpoint] = useState(200);
+  const [fanSpeed, setFanSpeed] = useState(50);
+  const [minHeaterPwm, setMinHeaterPwm] = useState(0);
+  const [maxHeaterPwm, setMaxHeaterPwm] = useState(60);
+
+  function sendAutotuneCommand(pidAutotune: boolean) {
+    sendCommand({
+      id: 1,
+      pidAutotune,
+      pidTarget: target,
+      pidTuneMethod: method,
+      setpoint,
+      FanVal: fanSpeed,
+      pidAutotuneMin: minHeaterPwm,
+      pidAutotuneMax: maxHeaterPwm,
+    });
+  }
+
+  return (
+    <div class="section">
+      <h2>PID Autotune</h2>
+      <div class="form-grid">
+        <label for="pid-target">Target</label>
+        <select id="pid-target" value={target} onInput={(e) => setTarget((e.target as HTMLSelectElement).value as "BT" | "ET" | "simBT")}>
+          <option value="BT">BT</option>
+          <option value="ET">ET</option>
+          <option value="simBT">simBT</option>
+        </select>
+
+        <label for="pid-method">Method</label>
+        <select id="pid-method" value={method} onInput={(e) => setMethod((e.target as HTMLSelectElement).value as "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot")}>
+          <option value="ziegler-nichols">Ziegler-Nichols</option>
+          <option value="tyreus-luyben">Tyreus-Luyben</option>
+          <option value="pessen-integral">Pessen Integral</option>
+          <option value="no-overshoot">No Overshoot</option>
+        </select>
+
+        <label for="pid-setpoint">Setpoint</label>
+        <input id="pid-setpoint" type="number" value={setpoint} onInput={(e) => setSetpoint(Number((e.target as HTMLInputElement).value))} />
+
+        <label for="pid-fan">Fan</label>
+        <input id="pid-fan" type="number" value={fanSpeed} onInput={(e) => setFanSpeed(Number((e.target as HTMLInputElement).value))} />
+
+        <label for="pid-min">Min Heater</label>
+        <input id="pid-min" type="number" value={minHeaterPwm} onInput={(e) => setMinHeaterPwm(Number((e.target as HTMLInputElement).value))} />
+
+        <label for="pid-max">Max Heater</label>
+        <input id="pid-max" type="number" value={maxHeaterPwm} onInput={(e) => setMaxHeaterPwm(Number((e.target as HTMLInputElement).value))} />
+      </div>
+
+      <p style={{ marginTop: "1rem" }}>
+        Active: <strong>{message?.pidAutotune ? "Yes" : "No"}</strong>
+      </p>
+      <p>Crossings: {message?.pidAutotuneCrossings ?? 0} / {message?.pidAutotuneTargetCrossings ?? 0}</p>
+      <p>Ku: {message?.pidAutotuneKu ?? "N/A"} | Pu: {message?.pidAutotunePu ?? "N/A"}</p>
+      <p>Elapsed: {message?.pidAutotuneElapsedSec ?? 0}s | ETA: {message?.pidAutotuneEtaSec ?? 0}s</p>
+
+      <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem" }}>
+        <button onClick={() => sendAutotuneCommand(true)}>Start Autotune</button>
+        <button onClick={() => sendAutotuneCommand(false)}>Stop Autotune</button>
       </div>
     </div>
   );
