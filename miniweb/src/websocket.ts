@@ -1,9 +1,33 @@
-import van from "vanjs-core";
-import { YaegerMessage } from "./model.ts";
+import { YaegerMessage } from "./model";
 
-export const connectionStatus = van.state("Disconnected");
-export const lastMessage = van.state<YaegerMessage | null>(null);
-export const lastUpdate = van.state<Date | null>(null);
+export class Signal<T> {
+  private listeners = new Set<(value: T) => void>();
+  private _val: T;
+
+  constructor(initial: T) {
+    this._val = initial;
+  }
+
+  get val(): T {
+    return this._val;
+  }
+
+  set val(next: T) {
+    this._val = next;
+    for (const listener of this.listeners) {
+      listener(next);
+    }
+  }
+
+  subscribe(listener: (value: T) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+export const connectionStatus = new Signal("Disconnected");
+export const lastMessage = new Signal<YaegerMessage | null>(null);
+export const lastUpdate = new Signal<Date | null>(null);
 
 const WS_PATH = "/ws";
 const DATA_REQUEST_INTERVAL_MS = 1000;
@@ -36,12 +60,7 @@ function sendGetData() {
     return;
   }
 
-  socket.send(
-    JSON.stringify({
-      id: 1,
-      command: "getData",
-    }),
-  );
+  socket.send(JSON.stringify({ id: 1, command: "getData" }));
 }
 
 function handleMessage(event: MessageEvent) {
