@@ -1,9 +1,33 @@
-import van from "vanjs-core";
-import { YaegerMessage } from "./model.ts";
+import type { YaegerMessage } from "./model";
 
-export const connectionStatus = van.state("Disconnected");
-export const lastMessage = van.state<YaegerMessage | null>(null);
-export const lastUpdate = van.state<Date | null>(null);
+export class Signal<T> {
+  private _val: T;
+  private listeners = new Set<(value: T) => void>();
+
+  constructor(initial: T) {
+    this._val = initial;
+  }
+
+  get val(): T {
+    return this._val;
+  }
+
+  set val(next: T) {
+    this._val = next;
+    for (const listener of this.listeners) {
+      listener(next);
+    }
+  }
+
+  subscribe(listener: (value: T) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+export const connectionStatus = new Signal("Disconnected");
+export const lastMessage = new Signal<YaegerMessage | null>(null);
+export const lastUpdate = new Signal<Date | null>(null);
 
 const WS_PATH = "/ws";
 const DATA_REQUEST_INTERVAL_MS = 1000;
@@ -21,10 +45,7 @@ function stopPolling() {
 }
 
 function scheduleReconnect() {
-  if (reconnectTimerId != null) {
-    return;
-  }
-
+  if (reconnectTimerId != null) return;
   reconnectTimerId = window.setTimeout(() => {
     reconnectTimerId = null;
     connectWebSocket();
@@ -32,23 +53,14 @@ function scheduleReconnect() {
 }
 
 function sendGetData() {
-  if (socket?.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  socket.send(
-    JSON.stringify({
-      id: 1,
-      command: "getData",
-    }),
-  );
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ id: 1, command: "getData" }));
 }
 
 function handleMessage(event: MessageEvent) {
   try {
     const parsed = JSON.parse(event.data);
     const message: YaegerMessage | undefined = parsed.data;
-
     if (message) {
       lastMessage.val = message;
       lastUpdate.val = new Date();
@@ -88,4 +100,8 @@ function connectWebSocket() {
 
 connectWebSocket();
 
-export { socket };
+export function sendCommand(command: Record<string, unknown>) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(command));
+  }
+}
