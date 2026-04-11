@@ -21,6 +21,10 @@ declare const __BUILD_TIMESTAMP__: string;
 
 type AppTab = "home" | "roast" | "autotune" | "logs" | "settings";
 
+type RoastCommand = { type: "fan" | "heater"; value: number; timestamp: Date };
+type RoastEvent = { label: string; timestamp: Date; ET: number; BT: number };
+type RoastMeasurement = { timestamp: Date; message: YaegerMessage };
+
 interface DeviceInfo {
   firmwareVersion: string;
   networkMode: string;
@@ -36,56 +40,49 @@ function useSignalValue<T>(signal: Signal<T>): T {
   return value;
 }
 
-function useRoastChart(message: YaegerMessage | null) {
+function useRoastChart(measurements: RoastMeasurement[]) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart<"line"> | null>(null);
 
   useEffect(() => {
     if (!canvasRef.current || chartRef.current) return;
 
-    const data: ChartData<"line"> = {
-      labels: [],
-      datasets: [
-        { label: "ET", data: [], borderColor: "#f97316", tension: 0.2 },
-        { label: "BT", data: [], borderColor: "#3b82f6", tension: 0.2 },
-        { label: "simBT", data: [], borderColor: "#8b5cf6", tension: 0.2 },
-      ],
-    };
-
     chartRef.current = new Chart<"line">(canvasRef.current, {
       type: "line",
-      data,
-      options: {
-        responsive: true,
-        animation: false,
-        scales: {
-          y: { title: { display: true, text: "°C" } },
-        },
+      data: {
+        labels: [],
+        datasets: [
+          { label: "ET", data: [], borderColor: "#f97316", tension: 0.2 },
+          { label: "BT", data: [], borderColor: "#3b82f6", tension: 0.2 },
+          { label: "simBT", data: [], borderColor: "#8b5cf6", tension: 0.2 },
+        ],
       },
+      options: { responsive: true, animation: false, scales: { y: { title: { display: true, text: "°C" } } } },
     });
 
     return () => chartRef.current?.destroy();
   }, []);
 
   useEffect(() => {
-    if (!message || !chartRef.current) return;
+    if (!chartRef.current) return;
     const chart = chartRef.current;
-    const label = new Date().toLocaleTimeString();
+    const labels = measurements.map((m) => m.timestamp.toLocaleTimeString());
+    const et = measurements.map((m) => m.message.ET);
+    const bt = measurements.map((m) => m.message.BT);
+    const sim = measurements.map((m) => m.message.simBT ?? null);
 
-    chart.data.labels?.push(label);
-    chart.data.datasets[0].data.push(message.ET);
-    chart.data.datasets[1].data.push(message.BT);
-    chart.data.datasets[2].data.push(message.simBT ?? null);
+    const data: ChartData<"line"> = {
+      labels,
+      datasets: [
+        { ...chart.data.datasets[0], data: et },
+        { ...chart.data.datasets[1], data: bt },
+        { ...chart.data.datasets[2], data: sim },
+      ],
+    };
 
-    const maxPoints = 300;
-    if ((chart.data.labels?.length ?? 0) > maxPoints) {
-      chart.data.labels = chart.data.labels?.slice(-maxPoints);
-      for (const ds of chart.data.datasets) {
-        ds.data = ds.data.slice(-maxPoints);
-      }
-    }
+    chart.data = data;
     chart.update();
-  }, [message]);
+  }, [measurements]);
 
   return canvasRef;
 }
@@ -100,7 +97,6 @@ export function App() {
   const [pass, setPass] = useState("");
   const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
   const [deviceInfoError, setDeviceInfoError] = useState<string | null>(null);
-
   const buildTimestamp = useMemo(() => new Date(__BUILD_TIMESTAMP__).toLocaleString(), []);
 
   async function refreshDeviceInfo() {
@@ -151,23 +147,10 @@ export function App() {
 
       <div class="tab-content">
         {activeTab === "home" && <HomeTab status={status} message={message} updatedAt={updatedAt} />}
-        {activeTab === "roast" && <RoastTab message={message} />}
+        {activeTab === "roast" && <RoastTab message={message} updatedAt={updatedAt} />}
         {activeTab === "autotune" && <AutotuneTab message={message} />}
         {activeTab === "logs" && <LogsTab />}
-        {activeTab === "settings" && (
-          <SettingsTab
-            appVersion={__APP_VERSION__}
-            buildTimestamp={buildTimestamp}
-            deviceInfo={deviceInfo}
-            deviceInfoError={deviceInfoError}
-            refreshDeviceInfo={refreshDeviceInfo}
-            ssid={ssid}
-            pass={pass}
-            setSsid={setSsid}
-            setPass={setPass}
-            updateWifiSettings={updateWifiSettings}
-          />
-        )}
+        {activeTab === "settings" && <SettingsTab appVersion={__APP_VERSION__} buildTimestamp={buildTimestamp} deviceInfo={deviceInfo} deviceInfoError={deviceInfoError} refreshDeviceInfo={refreshDeviceInfo} ssid={ssid} pass={pass} setSsid={setSsid} setPass={setPass} updateWifiSettings={updateWifiSettings} />}
       </div>
     </div>
   );
@@ -177,28 +160,152 @@ function HomeTab({ status, message, updatedAt }: { status: string; message: Yaeg
   return <div class="section"><h2>Status</h2><p>Connection: {status}</p><p>ET: {message?.ET ?? "N/A"}°C</p><p>BT: {message?.BT ?? "N/A"}°C</p><p>Last update: {updatedAt?.toLocaleTimeString() ?? "N/A"}</p></div>;
 }
 
-function RoastTab({ message }: { message: YaegerMessage | null }) {
+function RoastTab({ message, updatedAt }: { message: YaegerMessage | null; updatedAt: Date | null }) {
+  const [isRoasting, setIsRoasting] = useState(false);
+  const [measurements, setMeasurements] = useState<RoastMeasurement[]>([]);
+  const [events, setEvents] = useState<RoastEvent[]>([]);
+  const [commands, setCommands] = useState<RoastCommand[]>([]);
   const [fan, setFan] = useState(50);
   const [heater, setHeater] = useState(50);
-  const chartRef = useRoastChart(message);
+  const [setpoint, setSetpoint] = useState(200);
+  const [pidEnabled, setPidEnabled] = useState(false);
+  const [pidTarget, setPidTarget] = useState<"BT" | "ET" | "simBT">("BT");
+  const [pidKp, setPidKp] = useState(1);
+  const [pidKi, setPidKi] = useState(0.1);
+  const [pidKd, setPidKd] = useState(0.01);
+  const chartRef = useRoastChart(measurements);
 
   useEffect(() => {
-    if (!message) return;
+    if (!message || !updatedAt) return;
     setFan(message.FanVal);
     setHeater(message.BurnerVal);
-  }, [message]);
+    if (isRoasting) {
+      setMeasurements((prev) => [...prev, { timestamp: updatedAt, message }].slice(-300));
+    }
+  }, [message, updatedAt, isRoasting]);
+
+  const btRoR = useMemo(() => {
+    if (measurements.length < 2) return null;
+    const a = measurements[measurements.length - 2];
+    const b = measurements[measurements.length - 1];
+    const dt = (b.timestamp.getTime() - a.timestamp.getTime()) / 1000;
+    if (dt <= 0) return null;
+    return ((b.message.BT - a.message.BT) / dt) * 60;
+  }, [measurements]);
+
+  const etRoR = useMemo(() => {
+    if (measurements.length < 2) return null;
+    const a = measurements[measurements.length - 2];
+    const b = measurements[measurements.length - 1];
+    const dt = (b.timestamp.getTime() - a.timestamp.getTime()) / 1000;
+    if (dt <= 0) return null;
+    return ((b.message.ET - a.message.ET) / dt) * 60;
+  }, [measurements]);
+
+  const roastTime = useMemo(() => {
+    if (measurements.length < 2) return "00:00";
+    const start = measurements[0].timestamp.getTime();
+    const end = measurements[measurements.length - 1].timestamp.getTime();
+    const totalSec = Math.max(0, Math.floor((end - start) / 1000));
+    const m = Math.floor(totalSec / 60).toString().padStart(2, "0");
+    const s = (totalSec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  }, [measurements]);
+
+  const appendCommand = (type: "fan" | "heater", value: number) => {
+    if (!isRoasting) return;
+    setCommands((prev) => [...prev, { type, value, timestamp: new Date() }]);
+  };
+
+  const appendEvent = (label: string) => {
+    if (!isRoasting || !message) return;
+    setEvents((prev) => [...prev, { label, timestamp: new Date(), ET: message.ET, BT: message.BT }]);
+  };
+
+  const toggleRoast = () => {
+    if (!isRoasting) {
+      setIsRoasting(true);
+      setMeasurements([]);
+      setEvents([]);
+      setCommands([]);
+      sendCommand({ id: 1, command: "startRoast" });
+    } else {
+      setIsRoasting(false);
+      sendCommand({ id: 1, command: "endRoast" });
+    }
+  };
+
+  const downloadRoast = () => {
+    const blob = new Blob([JSON.stringify({ measurements, events, commands })], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "roast.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const uploadRoast = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        const parsedMeasurements = (parsed.measurements ?? []).map((m: any) => ({ timestamp: new Date(m.timestamp), message: m.message }));
+        setMeasurements(parsedMeasurements);
+        setEvents((parsed.events ?? []).map((e: any) => ({ ...e, timestamp: new Date(e.timestamp) })));
+        setCommands((parsed.commands ?? []).map((c: any) => ({ ...c, timestamp: new Date(c.timestamp) })));
+      } catch {
+        alert("Invalid roast file");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const sendPidConfig = () => {
+    sendCommand({ id: 1, command: "setPreferences", pidTarget, pidKp, pidKi, pidKd });
+    sendCommand({ id: 1, command: "setPidControl", setpoint, pidEnabled, pidTarget });
+  };
 
   return (
     <div class="section">
-      <h2>Roast Control + Live Graph</h2>
-      <canvas ref={chartRef} height={180} />
-      <div class="slider-wrapper"><label>Fan {fan}%</label><input type="range" min={0} max={100} value={fan} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setFan(v); sendCommand({ id: 1, FanVal: v }); }} /></div>
-      <div class="slider-wrapper"><label>Heater {heater}%</label><input type="range" min={0} max={100} value={heater} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setHeater(v); sendCommand({ id: 1, BurnerVal: v }); }} /></div>
-      <div style={{ display: "flex", gap: "0.5rem" }}>
-        <button onClick={() => sendCommand({ id: 1, command: "startRoast" })}>Start Roast</button>
-        <button onClick={() => sendCommand({ id: 1, command: "endRoast" })}>End Roast</button>
-        <button onClick={() => sendCommand({ id: 1, BurnerVal: 0, FanVal: 100 })}>Emergency Cool</button>
+      <h2>Roast</h2>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <button onClick={toggleRoast}>{isRoasting ? "Stop" : "Start"}</button>
+        <button onClick={downloadRoast} disabled={isRoasting || measurements.length === 0}>Download</button>
+        <label class="tab-btn" style={{ cursor: "pointer" }}>Upload<input type="file" accept="application/json" style={{ display: "none" }} onChange={(e) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) uploadRoast(f); }} /></label>
+        <span>Roast time: {roastTime}</span>
       </div>
+
+      <canvas ref={chartRef} height={180} style={{ marginTop: "0.75rem" }} />
+
+      <div class="control_cluster">
+        <div>Setpoint {setpoint}°C <input type="range" min={0} max={300} value={setpoint} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setSetpoint(v); sendCommand({ id: 1, command: "setPidControl", setpoint: v, pidEnabled, pidTarget }); }} /></div>
+        <div>Fan {fan}% <input type="range" min={0} max={100} step={5} value={fan} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setFan(v); sendCommand({ id: 1, FanVal: v }); appendCommand("fan", v); }} /></div>
+        <div>Heater {heater}% <input type="range" min={0} max={100} step={5} value={heater} disabled={pidEnabled} onInput={(e) => { const v = Number((e.target as HTMLInputElement).value); setHeater(v); sendCommand({ id: 1, BurnerVal: v }); appendCommand("heater", v); }} /></div>
+      </div>
+
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.5rem" }}>
+        {['charge','dry-end','first-crack-start','first-crack-end','second-crack-start','second-crack-end','drop'].map((label) => (
+          <button key={label} onClick={() => appendEvent(label)}>{label}</button>
+        ))}
+      </div>
+
+      <p>ET: {message?.ET ?? 'N/A'} | BT: {message?.BT ?? 'N/A'} | Sim BT: {message?.simBT?.toFixed(1) ?? 'N/A'} | BT RoR: {btRoR?.toFixed(2) ?? 'N/A'} | ET RoR: {etRoR?.toFixed(2) ?? 'N/A'}</p>
+      <p>Last update: {updatedAt?.toString() ?? 'N/A'}</p>
+      <p>PID live: Temp {message?.pidCurrentTemp?.toFixed(2) ?? 'N/A'} | Error {message?.pidError?.toFixed(2) ?? 'N/A'} | Integral {message?.pidIntegral?.toFixed(2) ?? 'N/A'} | Derivative {message?.pidDerivative?.toFixed(2) ?? 'N/A'} | Output {message?.pidOutput?.toFixed(2) ?? 'N/A'}</p>
+
+      <h3>PID Config</h3>
+      <div class="form-grid">
+        <label>P</label><input type="number" value={pidKp} onInput={(e) => setPidKp(Number((e.target as HTMLInputElement).value))} />
+        <label>I</label><input type="number" value={pidKi} onInput={(e) => setPidKi(Number((e.target as HTMLInputElement).value))} />
+        <label>D</label><input type="number" value={pidKd} onInput={(e) => setPidKd(Number((e.target as HTMLInputElement).value))} />
+        <label>Target</label>
+        <select value={pidTarget} onInput={(e) => setPidTarget((e.target as HTMLSelectElement).value as "BT" | "ET" | "simBT")}>
+          <option value="BT">BT</option><option value="ET">ET</option><option value="simBT">Sim BT</option>
+        </select>
+      </div>
+      <label><input type="checkbox" checked={pidEnabled} onInput={(e) => setPidEnabled((e.target as HTMLInputElement).checked)} /> PID Enabled</label>
+      <button onClick={sendPidConfig}>Apply PID</button>
     </div>
   );
 }
@@ -213,7 +320,7 @@ function AutotuneTab({ message }: { message: YaegerMessage | null }) {
 
   const submit = (pidAutotune: boolean) => sendCommand({ id: 1, pidAutotune, pidTarget: target, pidTuneMethod: method, setpoint, FanVal: fanSpeed, pidAutotuneMin: minHeaterPwm, pidAutotuneMax: maxHeaterPwm });
 
-  return <div class="section"><h2>PID Autotune</h2><div class="form-grid"><label>Target</label><select value={target} onInput={(e) => setTarget((e.target as HTMLSelectElement).value as "BT" | "ET" | "simBT")}><option value="BT">BT</option><option value="ET">ET</option><option value="simBT">simBT</option></select><label>Method</label><select value={method} onInput={(e) => setMethod((e.target as HTMLSelectElement).value as "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot")}><option value="ziegler-nichols">Ziegler-Nichols</option><option value="tyreus-luyben">Tyreus-Luyben</option><option value="pessen-integral">Pessen</option><option value="no-overshoot">No Overshoot</option></select><label>Setpoint</label><input type="number" value={setpoint} onInput={(e) => setSetpoint(Number((e.target as HTMLInputElement).value))} /><label>Fan</label><input type="number" value={fanSpeed} onInput={(e) => setFanSpeed(Number((e.target as HTMLInputElement).value))} /><label>Min Heater</label><input type="number" value={minHeaterPwm} onInput={(e) => setMinHeaterPwm(Number((e.target as HTMLInputElement).value))} /><label>Max Heater</label><input type="number" value={maxHeaterPwm} onInput={(e) => setMaxHeaterPwm(Number((e.target as HTMLInputElement).value))} /></div><p>Active: {message?.pidAutotune ? "Yes" : "No"}</p><p>Crossings: {message?.pidAutotuneCrossings ?? 0}/{message?.pidAutotuneTargetCrossings ?? 0}</p><button onClick={() => submit(true)}>Start Autotune</button> <button onClick={() => submit(false)}>Stop Autotune</button></div>;
+  return <div class="section"><h2>PID Autotune</h2><div class="form-grid"><label>Target</label><select value={target} onInput={(e) => setTarget((e.target as HTMLSelectElement).value as "BT" | "ET" | "simBT")}><option value="BT">BT</option><option value="ET">ET</option><option value="simBT">simBT</option></select><label>Method</label><select value={method} onInput={(e) => setMethod((e.target as HTMLSelectElement).value as "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot")}><option value="ziegler-nichols">Ziegler-Nichols</option><option value="tyreus-luyben">Tyreus-Luyben</option><option value="pessen-integral">Pessen</option><option value="no-overshoot">No Overshoot</option></select><label>Setpoint</label><input type="number" value={setpoint} onInput={(e) => setSetpoint(Number((e.target as HTMLInputElement).value))} /><label>Fan</label><input type="number" value={fanSpeed} onInput={(e) => setFanSpeed(Number((e.target as HTMLInputElement).value))} /><label>Min Heater</label><input type="number" value={minHeaterPwm} onInput={(e) => setMinHeaterPwm(Number((e.target as HTMLInputElement).value))} /><label>Max Heater</label><input type="number" value={maxHeaterPwm} onInput={(e) => setMaxHeaterPwm(Number((e.target as HTMLInputElement).value))} /></div><p>Active: {message?.pidAutotune ? "Yes" : "No"}</p><p>Crossings: {message?.pidAutotuneCrossings ?? 0}/{message?.pidAutotuneTargetCrossings ?? 0}</p><p>Ku/Pu: {message?.pidAutotuneKu ?? "N/A"}/{message?.pidAutotunePu ?? "N/A"}</p><button onClick={() => submit(true)}>Start Autotune</button> <button onClick={() => submit(false)}>Stop Autotune</button></div>;
 }
 
 function LogsTab() {
@@ -234,17 +341,6 @@ function LogsTab() {
   return <div class="section"><h2>Logs</h2><button onClick={() => void refreshLogs()}>Refresh Logs</button>{error && <p style={{ color: "#b91c1c" }}>{error}</p>}<textarea readOnly value={logs} rows={18} style={{ width: "100%", marginTop: "1rem" }} /></div>;
 }
 
-function SettingsTab(props: {
-  appVersion: string;
-  buildTimestamp: string;
-  deviceInfo: DeviceInfo | null;
-  deviceInfoError: string | null;
-  refreshDeviceInfo: () => Promise<void>;
-  ssid: string;
-  pass: string;
-  setSsid: (value: string) => void;
-  setPass: (value: string) => void;
-  updateWifiSettings: () => Promise<void>;
-}) {
+function SettingsTab(props: { appVersion: string; buildTimestamp: string; deviceInfo: DeviceInfo | null; deviceInfoError: string | null; refreshDeviceInfo: () => Promise<void>; ssid: string; pass: string; setSsid: (value: string) => void; setPass: (value: string) => void; updateWifiSettings: () => Promise<void>; }) {
   return <div class="section"><h2>Settings</h2><p>Web UI version: {props.appVersion}</p><p>Web UI build: {props.buildTimestamp}</p><p>Firmware: {props.deviceInfo?.firmwareVersion ?? "N/A"}</p><p>IP: {props.deviceInfo?.ip ?? "N/A"}</p>{props.deviceInfoError && <p style={{ color: "#b91c1c" }}>{props.deviceInfoError}</p>}<button onClick={() => void props.refreshDeviceInfo()}>Refresh Info</button><div class="form-grid"><label>Wi‑Fi SSID</label><input type="text" value={props.ssid} onInput={(e) => props.setSsid((e.target as HTMLInputElement).value)} /><label>Wi‑Fi Password</label><input type="password" value={props.pass} onInput={(e) => props.setPass((e.target as HTMLInputElement).value)} /></div><button onClick={() => void props.updateWifiSettings()}>Update Wi-Fi</button></div>;
 }
