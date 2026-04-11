@@ -5,6 +5,7 @@
 #include "version.h"
 #include "wifi_setup.h"
 #include "heater.h"
+#include "fan.h"
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
@@ -95,12 +96,19 @@ void setupApi(AsyncWebServer *server) {
              [](AsyncWebServerRequest *request) {
                JsonDocument doc;
                doc["heaterCyclePeriodMs"] = getHeaterCyclePeriodMs();
+               doc["fanRampDelayMs"] = getFanRampDelayMs();
 
                JsonArray supported = doc["heaterCyclePeriodOptionsMs"].to<JsonArray>();
                supported.add(250);
                supported.add(500);
                supported.add(1000);
                supported.add(2000);
+               JsonArray fanRampSupported = doc["fanRampDelayOptionsMs"].to<JsonArray>();
+               fanRampSupported.add(0);
+               fanRampSupported.add(10);
+               fanRampSupported.add(25);
+               fanRampSupported.add(50);
+               fanRampSupported.add(100);
 
                String body;
                serializeJson(doc, body);
@@ -138,29 +146,62 @@ void setupApi(AsyncWebServer *server) {
           return;
         }
 
-        if (!doc["heaterCyclePeriodMs"].is<long>()) {
+        bool hasHeaterCyclePeriod = !doc["heaterCyclePeriodMs"].isNull();
+        bool hasFanRampDelay = !doc["fanRampDelayMs"].isNull();
+        if (!hasHeaterCyclePeriod && !hasFanRampDelay) {
+          request->send(400, "application/json",
+                        "{\"error\":\"no settings provided\"}");
+          return;
+        }
+
+        if (hasHeaterCyclePeriod && !doc["heaterCyclePeriodMs"].is<long>()) {
           request->send(400, "application/json",
                         "{\"error\":\"heaterCyclePeriodMs must be numeric\"}");
           return;
         }
 
-        long heaterCyclePeriodMs = doc["heaterCyclePeriodMs"].as<long>();
-        if (heaterCyclePeriodMs < 100) {
-          heaterCyclePeriodMs = 100;
-        } else if (heaterCyclePeriodMs > 5000) {
-          heaterCyclePeriodMs = 5000;
+        if (hasFanRampDelay && !doc["fanRampDelayMs"].is<long>()) {
+          request->send(400, "application/json",
+                        "{\"error\":\"fanRampDelayMs must be numeric\"}");
+          return;
         }
 
-        setHeaterCyclePeriodMs(heaterCyclePeriodMs);
+        long heaterCyclePeriodMs = getHeaterCyclePeriodMs();
+        if (hasHeaterCyclePeriod) {
+          heaterCyclePeriodMs = doc["heaterCyclePeriodMs"].as<long>();
+          if (heaterCyclePeriodMs < 100) {
+            heaterCyclePeriodMs = 100;
+          } else if (heaterCyclePeriodMs > 5000) {
+            heaterCyclePeriodMs = 5000;
+          }
+          setHeaterCyclePeriodMs(heaterCyclePeriodMs);
+        }
+
+        long fanRampDelayMs = getFanRampDelayMs();
+        if (hasFanRampDelay) {
+          fanRampDelayMs = doc["fanRampDelayMs"].as<long>();
+          if (fanRampDelayMs < 0) {
+            fanRampDelayMs = 0;
+          } else if (fanRampDelayMs > 1000) {
+            fanRampDelayMs = 1000;
+          }
+          setFanRampDelayMs(fanRampDelayMs);
+        }
 
         Preferences prefs;
         prefs.begin("preferences", false);
-        prefs.putLong("heaterCycleMs", heaterCyclePeriodMs);
+        if (hasHeaterCyclePeriod) {
+          prefs.putLong("heaterCycleMs", heaterCyclePeriodMs);
+        }
+        if (hasFanRampDelay) {
+          prefs.putLong("fanRampMs", fanRampDelayMs);
+        }
         prefs.end();
 
         JsonDocument response;
         response["ok"] = true;
         response["heaterCyclePeriodMs"] = getHeaterCyclePeriodMs();
+        response["fanRampDelayMs"] = getFanRampDelayMs();
         String body;
         serializeJson(response, body);
         request->send(200, "application/json", body);

@@ -21,6 +21,8 @@ interface DeviceInfo {
 interface ControlSettings {
   heaterCyclePeriodMs: number;
   heaterCyclePeriodOptionsMs: number[];
+  fanRampDelayMs: number;
+  fanRampDelayOptionsMs: number[];
 }
 
 type AppTab = "home" | "roast" | "logs" | "settings";
@@ -43,6 +45,8 @@ const deviceInfoError = van.state<string | null>(null);
 const csrfToken = van.state("");
 const heaterCyclePeriodMs = van.state(1000);
 const heaterCycleOptionsMs = van.state<number[]>([250, 500, 1000, 2000]);
+const fanRampDelayMs = van.state(50);
+const fanRampDelayOptionsMs = van.state<number[]>([0, 10, 25, 50, 100]);
 
 const appVersion = __APP_VERSION__;
 const buildTimestamp = new Date(__BUILD_TIMESTAMP__).toLocaleString();
@@ -80,6 +84,10 @@ const refreshControlSettings = async () => {
     heaterCyclePeriodMs.val = settings.heaterCyclePeriodMs;
     if (settings.heaterCyclePeriodOptionsMs.length > 0) {
       heaterCycleOptionsMs.val = settings.heaterCyclePeriodOptionsMs;
+    }
+    fanRampDelayMs.val = settings.fanRampDelayMs;
+    if (settings.fanRampDelayOptionsMs.length > 0) {
+      fanRampDelayOptionsMs.val = settings.fanRampDelayOptionsMs;
     }
   } catch (error) {
     console.error("Failed to refresh control settings:", error);
@@ -128,10 +136,13 @@ const updateControlSettings = async () => {
         Authorization: getBasicAuthHeaderValue(),
         "X-Yaeger-CSRF": csrfToken.val,
       },
-      body: JSON.stringify({ heaterCyclePeriodMs: heaterCyclePeriodMs.val }),
+      body: JSON.stringify({
+        heaterCyclePeriodMs: heaterCyclePeriodMs.val,
+        fanRampDelayMs: fanRampDelayMs.val,
+      }),
     });
     if (response.ok) {
-      alert("Duty cycle settings updated.");
+      alert("Timing settings updated.");
       await refreshControlSettings();
     } else {
       alert(`Something happened: ${response.status}`);
@@ -252,10 +263,10 @@ const SettingsPanel = () =>
     PIDConfig,
     div(
       { class: "section" },
-      h2("Duty Cycle Settings"),
+      h2("Timing Settings"),
       div(
         { class: "form-grid" },
-        p("Heater cycle period"),
+        p("Heater PWM period"),
         select(
           {
             value: () => heaterCyclePeriodMs.val.toString(),
@@ -271,13 +282,29 @@ const SettingsPanel = () =>
               option({ value: optionMs.toString() }, `${optionMs} ms`),
             ),
         ),
+        p("Fan ramp step delay"),
+        select(
+          {
+            value: () => fanRampDelayMs.val.toString(),
+            oninput: (e: Event) => {
+              fanRampDelayMs.val = parseInt(
+                (e.target as HTMLSelectElement).value,
+                10,
+              );
+            },
+          },
+          () =>
+            fanRampDelayOptionsMs.val.map((optionMs) =>
+              option({ value: optionMs.toString() }, `${optionMs} ms`),
+            ),
+        ),
       ),
       p(
         { class: "muted" },
         () =>
-          `At 50% heater output this equals ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms ON and ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms OFF.`,
+          `Heater: 50% output = ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms ON / ${(heaterCyclePeriodMs.val / 2).toFixed(0)} ms OFF. Fan: speed steps occur every ${fanRampDelayMs.val} ms.`,
       ),
-      button({ onclick: () => void updateControlSettings() }, "Save Duty Cycle"),
+      button({ onclick: () => void updateControlSettings() }, "Save Timings"),
     ),
     div(
       { class: "section" },

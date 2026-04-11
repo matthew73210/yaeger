@@ -126,6 +126,10 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc,
       client->text("{\"error\":\"invalid schema: heaterCyclePeriodMs must be numeric\"}");
       return false;
     }
+    if (!doc["fanRampDelayMs"].isNull() && !doc["fanRampDelayMs"].is<long>()) {
+      client->text("{\"error\":\"invalid schema: fanRampDelayMs must be numeric\"}");
+      return false;
+    }
   }
 
   if (strncmp(command, "setPidControl", 13) == 0) {
@@ -316,6 +320,16 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
         preferences.putLong("heaterCycleMs", heaterCyclePeriodMs);
         setHeaterCyclePeriodMs(heaterCyclePeriodMs);
       }
+      if (!doc["fanRampDelayMs"].isNull()) {
+        long fanRampDelayMs = doc["fanRampDelayMs"].as<long>();
+        if (fanRampDelayMs < 0) {
+          fanRampDelayMs = 0;
+        } else if (fanRampDelayMs > 1000) {
+          fanRampDelayMs = 1000;
+        }
+        preferences.putLong("fanRampMs", fanRampDelayMs);
+        setFanRampDelayMs(fanRampDelayMs);
+      }
     }
 
     if (command != NULL &&
@@ -330,6 +344,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
       dataObj["pidKd"] = preferences.getDouble("pidKd", 0.01);
       dataObj["cooldownFanSpeed"] = preferences.getLong("coolFanSpeed", 65);
       dataObj["heaterCyclePeriodMs"] = getHeaterCyclePeriodMs();
+      dataObj["fanRampDelayMs"] = getFanRampDelayMs();
       dataObj["setpoint"] = pidSetpoint;
       dataObj["pidEnabled"] = pidEnabled;
       dataObj["pidTarget"] = pidTargetToString(pidTarget);
@@ -388,6 +403,8 @@ void setupMainLoop(AsyncWebSocket *ws) {
   preferences.putBool("pidEnabled", false);
   long savedHeaterCyclePeriodMs = preferences.getLong("heaterCycleMs", 1000);
   setHeaterCyclePeriodMs(savedHeaterCyclePeriodMs);
+  long savedFanRampDelayMs = preferences.getLong("fanRampMs", 50);
+  setFanRampDelayMs(savedFanRampDelayMs);
   ws->onEvent(onWsEvent);
 }
 

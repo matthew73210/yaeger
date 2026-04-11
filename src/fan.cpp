@@ -7,7 +7,7 @@
 #include "semphr.h"
 #include "task.h"
 
-#define RAMP_DELAY_MS 50
+static unsigned long rampDelayMs = 50;
 
 /*SemaphoreHandle_t fanMutex; // Mutex to protect currentFanSpeed*/
 QueueHandle_t speedQueue;
@@ -47,6 +47,16 @@ void setFanSpeed(int speed) {
 
 int getFanSpeed() { return targetSpeed; }
 
+void setFanRampDelayMs(unsigned long delayMs) {
+  if (delayMs > 1000) {
+    delayMs = 1000;
+  }
+  rampDelayMs = delayMs;
+  logf("Fan ramp delay set to %lu ms\n", rampDelayMs);
+}
+
+unsigned long getFanRampDelayMs() { return rampDelayMs; }
+
 void rampFanSpeedTask(void *pvParams) {
   int desiredSpeed = 0;
 
@@ -72,7 +82,7 @@ void rampFanSpeedTask(void *pvParams) {
           break;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(RAMP_DELAY_MS)); // Delay between adjustments
+        vTaskDelay(pdMS_TO_TICKS(rampDelayMs)); // Delay between adjustments
       }
     }
   }
