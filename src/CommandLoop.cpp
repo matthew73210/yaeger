@@ -35,6 +35,7 @@ double pidDerivative = 0.0;
 double pidOutput = 0.0;
 
 double pidSetpoint = 20.0;
+double pidMeasuredDelay = 0.0;
 bool pidEnabled = true;
 enum class PidTargetSensor { BT, ET, SIM_BT };
 PidTargetSensor pidTarget = PidTargetSensor::BT;
@@ -244,6 +245,10 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc, cons
     }
     if (!doc["pidTarget"].isNull() && !doc["pidTarget"].is<const char *>()) {
       client->text("{\"error\":\"invalid schema: pidTarget must be string\"}");
+      return false;
+    }
+    if (!doc["pidMeasuredDelay"].isNull() && !doc["pidMeasuredDelay"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: pidMeasuredDelay must be numeric\"}");
       return false;
     }
     if (!doc["cooldownFanSpeed"].isNull() && !doc["cooldownFanSpeed"].is<long>()) {
@@ -598,6 +603,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         setPidGain("pidKd", preferenceTarget, pidKd);
         preferences.putDouble("pidKd", pidKd);
       }
+      if (!doc["pidMeasuredDelay"].isNull()) {
+        pidMeasuredDelay = std::clamp(doc["pidMeasuredDelay"].as<double>(), 0.0, 60.0);
+        preferences.putDouble("pidMeasuredDelay", pidMeasuredDelay);
+      }
       if (!doc["cooldownFanSpeed"].isNull()) {
         long cooldownFanSpeed = doc["cooldownFanSpeed"].as<long>();
         if (!isActuatorValueInRange(cooldownFanSpeed)) {
@@ -620,6 +629,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["pidKd"] = getPidGain("pidKd", pidTarget, 0.01);
       dataObj["cooldownFanSpeed"] = preferences.getLong("coolFanSpeed", 65);
       dataObj["setpoint"] = pidSetpoint;
+      dataObj["pidMeasuredDelay"] = pidMeasuredDelay;
       dataObj["pidEnabled"] = pidEnabled;
       dataObj["pidTarget"] = pidTargetToString(pidTarget);
       dataObj["pidTuneMethod"] = pidMethodToString(pidTuneMethod);
@@ -665,6 +675,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["BurnerVal"] = getHeaterPower();
       dataObj["FanVal"] = getFanSpeed();
       dataObj["setpoint"] = pidSetpoint;
+      dataObj["pidMeasuredDelay"] = pidMeasuredDelay;
       dataObj["pidEnabled"] = pidEnabled;
       dataObj["pidTarget"] = pidTargetToString(pidTarget);
       dataObj["pidTuneMethod"] = pidMethodToString(pidTuneMethod);
@@ -736,6 +747,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 void setupMainLoop(AsyncWebSocket *ws) {
   preferences.begin("preferences");
   pidSetpoint = preferences.getDouble("pidSetpoint", 20.0);
+  pidMeasuredDelay = std::clamp(preferences.getDouble("pidMeasuredDelay", 0.0), 0.0, 60.0);
   const String configuredTarget = preferences.getString("pidTarget", "BT");
   PidTargetSensor configuredPidTarget;
   if (parsePidTarget(configuredTarget.c_str(), configuredPidTarget)) {

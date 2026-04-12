@@ -30,6 +30,7 @@ function App() {
   const [pidPFactor, setPidPFactor] = useState(1.0);
   const [pidIFactor, setPidIFactor] = useState(0.1);
   const [pidDFactor, setPidDFactor] = useState(0.01);
+  const [pidMeasuredDelay, setPidMeasuredDelay] = useState(0);
   const [ssidField, setSsidField] = useState("");
   const [passField, setPassField] = useState("");
   const [activeTab, setActiveTab] = useState<AppTab>("home");
@@ -80,15 +81,26 @@ function App() {
       setPidDFactor(lastMessage.pidKdActive);
       hydratedAny = true;
     }
+    if (typeof lastMessage?.pidMeasuredDelay === "number") {
+      setPidMeasuredDelay(lastMessage.pidMeasuredDelay);
+      hydratedAny = true;
+    }
     if (hydratedAny) hasHydratedPidFromTelemetry.current = true;
   }, [isEditingPid, lastMessage]);
 
   useEffect(() => {
     const onPidUpdated = (event: Event) => {
-      const customEvent = event as CustomEvent<{ kp?: number; ki?: number; kd?: number; pidTarget?: "BT" | "ET" | "simBT" }>;
+      const customEvent = event as CustomEvent<{
+        kp?: number;
+        ki?: number;
+        kd?: number;
+        measuredDelay?: number;
+        pidTarget?: "BT" | "ET" | "simBT";
+      }>;
       if (typeof customEvent.detail?.kp === "number") setPidPFactor(customEvent.detail.kp);
       if (typeof customEvent.detail?.ki === "number") setPidIFactor(customEvent.detail.ki);
       if (typeof customEvent.detail?.kd === "number") setPidDFactor(customEvent.detail.kd);
+      if (typeof customEvent.detail?.measuredDelay === "number") setPidMeasuredDelay(customEvent.detail.measuredDelay);
     };
     window.addEventListener("pid-preferences-updated", onPidUpdated);
     return () => window.removeEventListener("pid-preferences-updated", onPidUpdated);
@@ -124,11 +136,12 @@ function App() {
       pidKp: pidPFactor,
       pidKi: pidIFactor,
       pidKd: pidDFactor,
+      pidMeasuredDelay,
       authToken: getAdminSecret(),
     });
     window.dispatchEvent(
       new CustomEvent("pid-preferences-updated", {
-        detail: { kp: pidPFactor, ki: pidIFactor, kd: pidDFactor },
+        detail: { kp: pidPFactor, ki: pidIFactor, kd: pidDFactor, measuredDelay: pidMeasuredDelay },
       }),
     );
   };
@@ -257,6 +270,17 @@ function App() {
                     onFocus={() => setIsEditingPid(true)}
                     onBlur={() => setIsEditingPid(false)}
                     onInput={(e) => setPidDFactor(Number((e.target as HTMLInputElement).value) || 0)}
+                  />
+                  <label for="pid-measured-delay">Measured delay (s)</label>
+                  <input
+                    id="pid-measured-delay"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={pidMeasuredDelay}
+                    onFocus={() => setIsEditingPid(true)}
+                    onBlur={() => setIsEditingPid(false)}
+                    onInput={(e) => setPidMeasuredDelay(Math.max(0, Number((e.target as HTMLInputElement).value) || 0))}
                   />
                 </div>
                 <p />

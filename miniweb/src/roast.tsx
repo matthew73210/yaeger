@@ -29,6 +29,7 @@ export function RoastApp() {
   const [kp, setKp] = useState(1.0);
   const [ki, setKi] = useState(0.1);
   const [kd, setKd] = useState(0.01);
+  const [measuredDelay, setMeasuredDelay] = useState(0);
   const [pidEnabled, setPidEnabled] = useState(false);
   const [pidTarget, setPidTarget] = useState<PidTarget>("BT");
   const [isEditingPid, setIsEditingPid] = useState(false);
@@ -212,6 +213,10 @@ export function RoastApp() {
         setKd(lastMessage.pidKdActive);
         hydratedAny = true;
       }
+      if (typeof lastMessage?.pidMeasuredDelay === "number") {
+        setMeasuredDelay(lastMessage.pidMeasuredDelay);
+        hydratedAny = true;
+      }
       if (hydratedAny) hasHydratedPidFromTelemetry.current = true;
     }
     if (lastMessage?.pidTarget) setPidTarget(lastMessage.pidTarget);
@@ -219,10 +224,17 @@ export function RoastApp() {
 
   useEffect(() => {
     const onPidUpdated = (event: Event) => {
-      const customEvent = event as CustomEvent<{ kp?: number; ki?: number; kd?: number; pidTarget?: PidTarget }>;
+      const customEvent = event as CustomEvent<{
+        kp?: number;
+        ki?: number;
+        kd?: number;
+        measuredDelay?: number;
+        pidTarget?: PidTarget;
+      }>;
       if (typeof customEvent.detail?.kp === "number") setKp(customEvent.detail.kp);
       if (typeof customEvent.detail?.ki === "number") setKi(customEvent.detail.ki);
       if (typeof customEvent.detail?.kd === "number") setKd(customEvent.detail.kd);
+      if (typeof customEvent.detail?.measuredDelay === "number") setMeasuredDelay(customEvent.detail.measuredDelay);
       if (customEvent.detail?.pidTarget) setPidTarget(customEvent.detail.pidTarget);
     };
     window.addEventListener("pid-preferences-updated", onPidUpdated);
@@ -540,6 +552,16 @@ export function RoastApp() {
             <option value="ET">ET</option>
             <option value="simBT">Sim BT</option>
           </select>
+          <label>Measured delay (s)</label>
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            value={measuredDelay}
+            onFocus={() => setIsEditingPid(true)}
+            onBlur={() => setIsEditingPid(false)}
+            onInput={(e) => setMeasuredDelay(Math.max(0, Number((e.target as HTMLInputElement).value) || 0))}
+          />
         </div>
         <div class="inline-actions">
           <button
@@ -552,10 +574,11 @@ export function RoastApp() {
                 pidKp: kp,
                 pidKi: ki,
                 pidKd: kd,
+                pidMeasuredDelay: measuredDelay,
               });
               window.dispatchEvent(
                 new CustomEvent("pid-preferences-updated", {
-                  detail: { kp, ki, kd, pidTarget },
+                  detail: { kp, ki, kd, measuredDelay, pidTarget },
                 }),
               );
             }}
