@@ -114,11 +114,15 @@ export function RoastApp() {
           measurements: [...prev.roast.measurements, measurement],
         };
 
-        if (profileStore.profile && profileStore.followProfileEnabled && roastControlActive) {
+        if (
+          profileStore.profile &&
+          profileStore.followProfileEnabled &&
+          prev.currentState.status === RoasterStatus.roasting
+        ) {
           const profileUpdate = followProfile(profileStore.profile, next.roast);
           if (profileUpdate) {
             setSetpointTarget(profileUpdate.setPoint);
-            sendPidControlConfig(prev.currentState.status, pidEnabled, profileUpdate.setPoint);
+            sendPidControlConfig(prev.currentState.status, true, profileUpdate.setPoint);
             if (profileUpdate.fanValue != null) {
               setFan(profileUpdate.fanValue);
               updateFanPower(profileUpdate.fanValue);
@@ -659,6 +663,21 @@ export function RoastApp() {
                 },
               };
             });
+          }}
+          onFollowProfileToggle={(enabled) => {
+            if (!enabled) return;
+            setPidEnabled(true);
+            if (state.currentState.status !== RoasterStatus.roasting || !profileStore.profile) return;
+            const roast = state.roast;
+            if (!roast) return;
+            const profileUpdate = followProfile(profileStore.profile, roast);
+            if (!profileUpdate) return;
+            setSetpointTarget(profileUpdate.setPoint);
+            sendPidControlConfig(state.currentState.status, true, profileUpdate.setPoint);
+            if (profileUpdate.fanValue != null) {
+              setFan(profileUpdate.fanValue);
+              updateFanPower(profileUpdate.fanValue);
+            }
           }}
         />
       </div>

@@ -91,6 +91,7 @@ function isValidProfile(obj: unknown): obj is Profile {
 type ProfileControlProps = {
   onStateChange: () => void;
   onProfileChange?: (profile?: Profile) => void;
+  onFollowProfileToggle?: (enabled: boolean) => void;
 };
 
 const DEFAULT_PROFILE: Profile = {
@@ -102,8 +103,41 @@ const DEFAULT_PROFILE: Profile = {
   ],
 };
 
-export function ProfileControl({ onStateChange, onProfileChange }: ProfileControlProps) {
+const BUILT_IN_PROFILES: Array<{ id: string; name: string; profile: Profile }> = [
+  { id: "quick-10", name: "Quick 10 min", profile: DEFAULT_PROFILE },
+  {
+    id: "balanced-12",
+    name: "Balanced 12 min",
+    profile: {
+      steps: [
+        { interpolation: "linear", setpoint: 155, duration: 180, fanValue: 30 },
+        { interpolation: "linear", setpoint: 180, duration: 210, fanValue: 40 },
+        { interpolation: "linear", setpoint: 198, duration: 180, fanValue: 50 },
+        { interpolation: "linear", setpoint: 212, duration: 150, fanValue: 60 },
+      ],
+    },
+  },
+  {
+    id: "development-forward",
+    name: "Development forward 14 min",
+    profile: {
+      steps: [
+        { interpolation: "linear", setpoint: 150, duration: 240, fanValue: 25 },
+        { interpolation: "linear", setpoint: 175, duration: 240, fanValue: 35 },
+        { interpolation: "linear", setpoint: 200, duration: 210, fanValue: 50 },
+        { interpolation: "linear", setpoint: 220, duration: 150, fanValue: 70 },
+      ],
+    },
+  },
+];
+
+export function ProfileControl({
+  onStateChange,
+  onProfileChange,
+  onFollowProfileToggle,
+}: ProfileControlProps) {
   const [error, setError] = useState("");
+  const [selectedBuiltIn, setSelectedBuiltIn] = useState("");
   const notifyProfileChange = (profile?: Profile) => {
     profileStore.profile = profile;
     onProfileChange?.(profile);
@@ -123,6 +157,7 @@ export function ProfileControl({ onStateChange, onProfileChange }: ProfileContro
         }
         profileStore.profile = parsed;
         profileStore.profileName = file.name;
+        setSelectedBuiltIn("");
         setError("");
         notifyProfileChange(parsed);
       } catch (uploadError) {
@@ -134,6 +169,28 @@ export function ProfileControl({ onStateChange, onProfileChange }: ProfileContro
 
   return (
     <div class="profile-control">
+      <label>
+        Built-in profile
+        <select
+          value={selectedBuiltIn}
+          onChange={(e) => {
+            const value = (e.target as HTMLSelectElement).value;
+            setSelectedBuiltIn(value);
+            if (!value) return;
+            const selected = BUILT_IN_PROFILES.find((item) => item.id === value);
+            if (!selected) return;
+            profileStore.profileName = selected.name;
+            notifyProfileChange({
+              steps: selected.profile.steps.map((step) => ({ ...step })),
+            });
+          }}
+        >
+          <option value="">Choose built-in profile</option>
+          {BUILT_IN_PROFILES.map((item) => (
+            <option key={item.id} value={item.id}>{item.name}</option>
+          ))}
+        </select>
+      </label>
       <div class="profile-chip">Profile: {profileStore.profile ? profileStore.profileName : "waiting"}</div>
       <input
         id="profileInput"
@@ -145,6 +202,7 @@ export function ProfileControl({ onStateChange, onProfileChange }: ProfileContro
         <button
           onClick={() => {
             profileStore.profileName = "";
+            setSelectedBuiltIn("");
             notifyProfileChange(undefined);
           }}
         >
@@ -153,12 +211,28 @@ export function ProfileControl({ onStateChange, onProfileChange }: ProfileContro
         <button
           onClick={() => {
             profileStore.profileName = "10-minute-template";
+            setSelectedBuiltIn("quick-10");
             notifyProfileChange({
               steps: DEFAULT_PROFILE.steps.map((step) => ({ ...step })),
             });
           }}
         >
           New 10 min template
+        </button>
+        <button
+          disabled={!profileStore.profile}
+          onClick={() => {
+            if (!profileStore.profile) return;
+            const blob = new Blob([JSON.stringify(profileStore.profile, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${profileStore.profileName || "profile"}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+        >
+          Download profile
         </button>
       </div>
       <label class="switch-label">
@@ -167,6 +241,7 @@ export function ProfileControl({ onStateChange, onProfileChange }: ProfileContro
           checked={profileStore.followProfileEnabled}
           onChange={(e) => {
             profileStore.followProfileEnabled = e.currentTarget.checked;
+            onFollowProfileToggle?.(e.currentTarget.checked);
             onStateChange();
           }}
         />
