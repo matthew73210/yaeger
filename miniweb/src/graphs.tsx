@@ -215,7 +215,16 @@ export function RoastGraphs({
 
   if (!start || measurements.length < 2) {
     if (!activeProfile?.steps.length) {
-      return <div class="graph-empty">Live roast graphs will appear after the roast starts.</div>;
+      return (
+        <VisxLineGraph
+          title="Roast Graph (idle preview)"
+          samples={[0, 60]}
+          minY={0}
+          maxY={300}
+          height={Math.round(320 * Math.min(1.8, Math.max(0.7, heightScale)))}
+          series={[]}
+        />
+      );
     }
 
     const totalDuration = activeProfile.steps.reduce((sum, step) => sum + Math.max(step.duration, 0), 0);

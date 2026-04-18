@@ -127,10 +127,6 @@ export function RoastApp() {
               setFan(profileUpdate.fanValue);
               updateFanPower(profileUpdate.fanValue);
             }
-            if (profileUpdate.heaterValue != null) {
-              setHeater(profileUpdate.heaterValue);
-              updateHeaterPower(profileUpdate.heaterValue);
-            }
           }
         }
 
@@ -681,10 +677,6 @@ export function RoastApp() {
             if (profileUpdate.fanValue != null) {
               setFan(profileUpdate.fanValue);
               updateFanPower(profileUpdate.fanValue);
-            }
-            if (profileUpdate.heaterValue != null) {
-              setHeater(profileUpdate.heaterValue);
-              updateHeaterPower(profileUpdate.heaterValue);
             }
           }}
         />
