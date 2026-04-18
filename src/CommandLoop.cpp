@@ -205,11 +205,15 @@ bool isMutatingCommand(const char *command) {
          strncmp(command, "clearEmergencyStop", 18) == 0;
 }
 
-bool enforceMutatingCommandAuth(AsyncWebSocketClient *client, JsonDocument &doc) {
+bool enforceMutatingCommandAuth(AsyncWebSocketClient *client, JsonDocument &doc, const char *command) {
   const char *authToken = doc["authToken"] | "";
   if (!isValidAdminToken(authToken)) {
     client->text("{\"error\":\"unauthorized mutating command\"}");
     return false;
+  }
+
+  if (command != NULL && strncmp(command, "emergencyStop", 13) == 0) {
+    return true;
   }
 
   unsigned long now = millis();
@@ -515,8 +519,12 @@ void setEmergencyStopState(bool active) {
     pidEnabled = false;
     pidAutotuneActive = false;
     pidDelayMeasureState = PidDelayMeasureState::IDLE;
+    roastSessionActive = false;
+    pidSetpoint = 0.0;
+    preferences.putBool("pidEnabled", false);
+    preferences.putDouble("pidSetpoint", pidSetpoint);
     setHeaterPower(0);
-    log("Emergency stop active: heater output clamped to 0");
+    log("Emergency stop active: heater output clamped to 0, PID/session stopped");
   } else {
     log("Emergency stop cleared");
   }
@@ -627,7 +635,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
     }
 
     if (hasDirectMutatingFields || isMutatingCommand(command)) {
-      if (!enforceMutatingCommandAuth(client, doc)) {
+      if (!enforceMutatingCommandAuth(client, doc, command)) {
         return;
       }
     }
