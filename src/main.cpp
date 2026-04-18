@@ -1,5 +1,4 @@
 
-#include <Adafruit_NeoPixel.h>
 #include <ESPAsyncWebServer.h>
 #include <ElegantOTA.h> //https://github.com/ayushsharma82/AsyncElegantOTA
 #include <LittleFS.h>
@@ -16,8 +15,11 @@
 #include "security.h"
 #include "wifi_setup.h"
 
+#if ENABLE_STATUS_PIXEL
+#include <Adafruit_NeoPixel.h>
 #define PIN 48
 Adafruit_NeoPixel pixels(1, PIN);
+#endif
 // Create AsyncWebServer object on port 80
 /*WebServer server(80);*/
 // Create a WebSocket object
@@ -32,9 +34,10 @@ unsigned long ota_progress_millis = 0;
 void onOTAStart() {
   // Log when OTA has started
   log("OTA update started!");
-  // <Add your own code here>
-  /*pixels.setPixelColor(0, pixels.Color(5,5,0));*/
-  /*pixels.show();*/
+#if ENABLE_STATUS_PIXEL
+  pixels.setPixelColor(0, pixels.Color(5, 5, 0));
+  pixels.show();
+#endif
 }
 
 void onOTAProgress(size_t current, size_t final) {
@@ -52,19 +55,22 @@ void onOTAEnd(bool success) {
   } else {
     log("There was an error during OTA update!");
   }
-  // <Add your own code here>
-  /*pixels.setPixelColor(0, pixels.Color(0,0,0));*/
-  /*pixels.show();*/
+#if ENABLE_STATUS_PIXEL
+  pixels.setPixelColor(0, pixels.Color(0, 0, 0));
+  pixels.show();
+#endif
 }
 
 void setup(void) {
   Serial.begin(115200);
   delay(1000); // Take some time to open up the Serial Monitor
   startSensors();
+#if ENABLE_STATUS_PIXEL
   pixels.begin();
   pixels.clear();
   pixels.setPixelColor(0, pixels.Color(5, 0, 0));
   pixels.show();
+#endif
 
   // Wait for connection
   setupWifi();
@@ -97,9 +103,11 @@ void setup(void) {
 
   server.begin();
   log("HTTP server started");
+#if ENABLE_STATUS_PIXEL
   pixels.clear();
   pixels.setPixelColor(0, pixels.Color(0, 5, 0));
   pixels.show();
+#endif
 
   initFan();
   initHeater();
