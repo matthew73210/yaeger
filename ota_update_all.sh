@@ -152,6 +152,10 @@ npm install --no-audit --no-fund
 npm run build
 popd >/dev/null
 
+# Some PlatformIO + littlefs-python combinations fail to create the target
+# build directory before opening the output image path.
+mkdir -p ".pio/build/$PIO_ENV"
+
 echo "Step 1/2: Uploading LittleFS image via OTA..."
 run_pio_with_auto_deps -e "$PIO_ENV" -t buildfs -t uploadfs
 
