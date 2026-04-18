@@ -96,6 +96,26 @@ function getProfileSetpointAtElapsed(profile: Profile, elapsedSeconds: number): 
   return profile.steps[profile.steps.length - 1].setpoint;
 }
 
+function buildProfilePreviewGraph(profile: Profile, heightScale: number) {
+  const totalDuration = profile.steps.reduce((sum, step) => sum + Math.max(step.duration, 0), 0);
+  const previewEndSec = Math.max(1, Math.ceil(totalDuration));
+  const previewSamples = Array.from({ length: previewEndSec + 1 }, (_, i) => i);
+  const previewValues = previewSamples.map((seconds) => getProfileSetpointAtElapsed(profile, seconds));
+  const validValues = previewValues.filter((value): value is number => typeof value === "number");
+  const minY = validValues.length ? Math.max(0, Math.floor(Math.min(...validValues) - 5)) : 0;
+  const maxY = validValues.length ? Math.ceil(Math.max(...validValues) + 5) : 300;
+  return (
+    <VisxLineGraph
+      title="Profile Preview"
+      samples={previewSamples}
+      minY={minY}
+      maxY={Math.max(maxY, minY + 10)}
+      height={Math.round(280 * Math.min(1.8, Math.max(0.7, heightScale)))}
+      series={[{ label: "Profile", color: "#facc15", values: previewValues }]}
+    />
+  );
+}
+
 function VisxLineGraph({ title, samples, series, minY, maxY, height, eventTimes = [] }: VisxLineGraphProps) {
   if (samples.length < 2) {
     return <div class="graph-empty">{title}: waiting for samples…</div>;
@@ -228,25 +248,7 @@ export function RoastGraphs({
         />
       );
     }
-
-    const totalDuration = activeProfile.steps.reduce((sum, step) => sum + Math.max(step.duration, 0), 0);
-    const previewEndSec = Math.max(1, Math.ceil(totalDuration));
-    const previewSamples = Array.from({ length: previewEndSec + 1 }, (_, i) => i);
-    const previewValues = previewSamples.map((seconds) => getProfileSetpointAtElapsed(activeProfile, seconds));
-    const validValues = previewValues.filter((value): value is number => typeof value === "number");
-    const minY = validValues.length ? Math.max(0, Math.floor(Math.min(...validValues) - 5)) : 0;
-    const maxY = validValues.length ? Math.ceil(Math.max(...validValues) + 5) : 300;
-
-    return (
-      <VisxLineGraph
-        title="Profile Preview"
-        samples={previewSamples}
-        minY={minY}
-        maxY={Math.max(maxY, minY + 10)}
-        height={Math.round(320 * Math.min(1.8, Math.max(0.7, heightScale)))}
-        series={[{ label: "Profile", color: "#facc15", values: previewValues }]}
-      />
-    );
+    return buildProfilePreviewGraph(activeProfile, heightScale);
   }
 
   const sampleTimes = measurements.map((m) => (m.timestamp.getTime() - start.getTime()) / 1000);
@@ -289,31 +291,35 @@ export function RoastGraphs({
 
   if (mode === "combined") {
     return (
-      <VisxLineGraph
-        title="Combined Roast Telemetry"
-        samples={chartSamples}
-        minY={0}
-        maxY={300}
-        height={combinedHeight}
-        eventTimes={eventTimes}
-        series={[
-          { label: "BT", color: "#60a5fa", values: maybeExtendSeries(bt, null) },
-          { label: "ET", color: "#f87171", values: maybeExtendSeries(et, null) },
-          { label: "Setpoint", color: "#34d399", values: maybeExtendSeries(setpoint, null) },
-          ...(profileSetpoint.length
-            ? [{ label: "Profile", color: "#facc15", values: maybeExtendSeries(profileSetpoint, profileSetpoint[profileSetpoint.length - 1]) }]
-            : []),
-          { label: "Fan % (x3)", color: "#38bdf8", values: maybeExtendSeries(fan.map((v) => v * 3), null) },
-          { label: "Heater % (x3)", color: "#fb923c", values: maybeExtendSeries(heater.map((v) => v * 3), null) },
-          { label: "BT RoR (x5)", color: "#22c55e", values: maybeExtendSeries(btRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
-          { label: "ET RoR (x5)", color: "#a855f7", values: maybeExtendSeries(etRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
-        ]}
-      />
+      <div class="graph-stack">
+        {activeProfile?.steps.length ? buildProfilePreviewGraph(activeProfile, heightScale) : null}
+        <VisxLineGraph
+          title="Combined Roast Telemetry"
+          samples={chartSamples}
+          minY={0}
+          maxY={300}
+          height={combinedHeight}
+          eventTimes={eventTimes}
+          series={[
+            { label: "BT", color: "#60a5fa", values: maybeExtendSeries(bt, null) },
+            { label: "ET", color: "#f87171", values: maybeExtendSeries(et, null) },
+            { label: "Setpoint", color: "#34d399", values: maybeExtendSeries(setpoint, null) },
+            ...(profileSetpoint.length
+              ? [{ label: "Profile", color: "#facc15", values: maybeExtendSeries(profileSetpoint, profileSetpoint[profileSetpoint.length - 1]) }]
+              : []),
+            { label: "Fan % (x3)", color: "#38bdf8", values: maybeExtendSeries(fan.map((v) => v * 3), null) },
+            { label: "Heater % (x3)", color: "#fb923c", values: maybeExtendSeries(heater.map((v) => v * 3), null) },
+            { label: "BT RoR (x5)", color: "#22c55e", values: maybeExtendSeries(btRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
+            { label: "ET RoR (x5)", color: "#a855f7", values: maybeExtendSeries(etRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
+          ]}
+        />
+      </div>
     );
   }
 
   return (
     <div class="graph-stack">
+      {activeProfile?.steps.length ? buildProfilePreviewGraph(activeProfile, heightScale) : null}
       <VisxLineGraph
         title="Temperature"
         samples={chartSamples}
