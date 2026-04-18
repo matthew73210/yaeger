@@ -59,6 +59,16 @@ if match:
 PY
 }
 
+is_transient_pio_failure() {
+  local log_file="$1"
+
+  if grep -Eq "FileNotFoundError: .*\\.sconsign[0-9]+\\.tmp" "$log_file"; then
+    return 0
+  fi
+
+  return 1
+}
+
 ensure_ota_venv() {
   local python_cmd="${PYTHON_BIN:-python3}"
 
@@ -103,6 +113,15 @@ run_pio_with_auto_deps() {
     if [[ $status -eq 0 ]]; then
       rm -f "$log_file"
       return 0
+    fi
+
+    if is_transient_pio_failure "$log_file"; then
+      echo "Detected transient SCons sign-file failure. Recreating build folder and retrying..."
+      mkdir -p ".pio/build/$PIO_ENV"
+      rm -f "$log_file"
+      attempt=$((attempt + 1))
+      sleep 1
+      continue
     fi
 
     local missing_module
