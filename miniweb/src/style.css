@@ -417,6 +417,32 @@ textarea:focus {
   gap: 0.65rem;
 }
 
+.profile-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.profile-step-row {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  border-radius: 0.65rem;
+  padding: 0.65rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.profile-step-row label {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.profile-step-row input {
+  margin-top: 0.3rem;
+}
+
 .profile-chip {
   width: fit-content;
   border: 1px solid hsl(var(--border));
@@ -666,6 +692,10 @@ input[type="range"]:disabled::-webkit-slider-thumb {
   border-radius: 0.6rem;
 }
 
+.profile-editor-graph circle {
+  cursor: ns-resize;
+}
+
 .graph-legend {
   display: flex;
   flex-wrap: wrap;
@@ -725,4 +755,3 @@ input[type="range"]:disabled::-webkit-slider-thumb {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-

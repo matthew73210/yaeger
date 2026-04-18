@@ -1,5 +1,6 @@
 import { ChangeEvent } from "preact/compat";
 import { useState } from "preact/hooks";
+import { ProfileEditorGraph } from "./graphs";
 import { Profile, RoastState } from "./model";
 
 export type ProfileStore = {
@@ -89,10 +90,25 @@ function isValidProfile(obj: unknown): obj is Profile {
 
 type ProfileControlProps = {
   onStateChange: () => void;
+  onProfileChange?: (profile?: Profile) => void;
 };
 
-export function ProfileControl({ onStateChange }: ProfileControlProps) {
+const DEFAULT_PROFILE: Profile = {
+  steps: [
+    { interpolation: "linear", setpoint: 160, duration: 180, fanValue: 30 },
+    { interpolation: "linear", setpoint: 185, duration: 180, fanValue: 40 },
+    { interpolation: "linear", setpoint: 205, duration: 120, fanValue: 55 },
+    { interpolation: "linear", setpoint: 220, duration: 120, fanValue: 65 },
+  ],
+};
+
+export function ProfileControl({ onStateChange, onProfileChange }: ProfileControlProps) {
   const [error, setError] = useState("");
+  const notifyProfileChange = (profile?: Profile) => {
+    profileStore.profile = profile;
+    onProfileChange?.(profile);
+    onStateChange();
+  };
 
   const onProfileUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -108,7 +124,7 @@ export function ProfileControl({ onStateChange }: ProfileControlProps) {
         profileStore.profile = parsed;
         profileStore.profileName = file.name;
         setError("");
-        onStateChange();
+        notifyProfileChange(parsed);
       } catch (uploadError) {
         setError(uploadError instanceof Error ? uploadError.message : "Upload failed");
       }
@@ -128,12 +144,21 @@ export function ProfileControl({ onStateChange }: ProfileControlProps) {
       <div class="inline-actions">
         <button
           onClick={() => {
-            profileStore.profile = undefined;
             profileStore.profileName = "";
-            onStateChange();
+            notifyProfileChange(undefined);
           }}
         >
           Clear
+        </button>
+        <button
+          onClick={() => {
+            profileStore.profileName = "10-minute-template";
+            notifyProfileChange({
+              steps: DEFAULT_PROFILE.steps.map((step) => ({ ...step })),
+            });
+          }}
+        >
+          New 10 min template
         </button>
       </div>
       <label class="switch-label">
@@ -147,6 +172,95 @@ export function ProfileControl({ onStateChange }: ProfileControlProps) {
         />
         Follow Profile Enabled
       </label>
+      {profileStore.profile && (
+        <>
+          <ProfileEditorGraph
+            profile={profileStore.profile}
+            onChange={(next) => notifyProfileChange(next)}
+          />
+          <div class="profile-steps-list">
+            {profileStore.profile.steps.map((step, index) => (
+              <div class="profile-step-row" key={`step-${index}`}>
+                <strong>Phase {index + 1}</strong>
+                <label>
+                  Temp
+                  <input
+                    type="number"
+                    min="0"
+                    max="300"
+                    value={step.setpoint}
+                    onInput={(e) => {
+                      const value = Number((e.target as HTMLInputElement).value);
+                      const next = { steps: profileStore.profile!.steps.map((item) => ({ ...item })) };
+                      next.steps[index].setpoint = Number.isFinite(value) ? value : step.setpoint;
+                      notifyProfileChange(next);
+                    }}
+                  />
+                </label>
+                <label>
+                  Fan %
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={step.fanValue ?? 0}
+                    onInput={(e) => {
+                      const value = Number((e.target as HTMLInputElement).value);
+                      const next = { steps: profileStore.profile!.steps.map((item) => ({ ...item })) };
+                      next.steps[index].fanValue = Number.isFinite(value) ? value : step.fanValue ?? 0;
+                      notifyProfileChange(next);
+                    }}
+                  />
+                </label>
+                <label>
+                  Duration (s)
+                  <input
+                    type="number"
+                    min="15"
+                    step="15"
+                    value={step.duration}
+                    onInput={(e) => {
+                      const value = Number((e.target as HTMLInputElement).value);
+                      const next = { steps: profileStore.profile!.steps.map((item) => ({ ...item })) };
+                      next.steps[index].duration = Math.max(15, Number.isFinite(value) ? value : step.duration);
+                      notifyProfileChange(next);
+                    }}
+                  />
+                </label>
+                <button
+                  onClick={() => {
+                    if (!profileStore.profile || profileStore.profile.steps.length <= 1) return;
+                    const next = {
+                      steps: profileStore.profile.steps
+                        .filter((_, stepIndex) => stepIndex !== index)
+                        .map((item) => ({ ...item })),
+                    };
+                    notifyProfileChange(next);
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => {
+                if (!profileStore.profile) return;
+                const last = profileStore.profile.steps[profileStore.profile.steps.length - 1];
+                const next = {
+                  steps: [
+                    ...profileStore.profile.steps.map((item) => ({ ...item })),
+                    { ...last, duration: 120 },
+                  ],
+                };
+                notifyProfileChange(next);
+              }}
+            >
+              Add phase
+            </button>
+          </div>
+        </>
+      )}
       {error && <p style="color:#b91c1c;">Profile error: {error}</p>}
     </div>
   );

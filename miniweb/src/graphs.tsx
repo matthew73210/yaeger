@@ -2,6 +2,7 @@ import { AxisBottom, AxisLeft } from "@visx/axis";
 import { Group } from "@visx/group";
 import { scaleLinear } from "@visx/scale";
 import { LinePath } from "@visx/shape";
+import { useMemo, useRef, useState } from "preact/hooks";
 import { Profile, RoastState } from "./model";
 
 export type RoastGraphMode = "combined" | "separate";
@@ -248,6 +249,19 @@ export function RoastGraphs({
   const profileSetpoint = activeProfile
     ? sampleTimes.map((seconds) => getProfileSetpointAtElapsed(activeProfile, seconds))
     : [];
+  const fullTimelineEnd =
+    activeProfile?.steps.length
+      ? Math.max(
+          sampleTimes[sampleTimes.length - 1] ?? 0,
+          activeProfile.steps.reduce((sum, step) => sum + Math.max(0, step.duration), 0),
+        )
+      : sampleTimes[sampleTimes.length - 1] ?? 0;
+  const chartSamples =
+    fullTimelineEnd > (sampleTimes[sampleTimes.length - 1] ?? 0)
+      ? [...sampleTimes, fullTimelineEnd]
+      : sampleTimes;
+  const maybeExtendSeries = (values: Array<number | null>, fill: number | null) =>
+    chartSamples.length > sampleTimes.length ? [...values, fill] : values;
 
   const eventTimes = (roast?.events ?? []).map((event) => ({
     label: String(event.label),
@@ -262,22 +276,22 @@ export function RoastGraphs({
     return (
       <VisxLineGraph
         title="Combined Roast Telemetry"
-        samples={sampleTimes}
+        samples={chartSamples}
         minY={0}
         maxY={300}
         height={combinedHeight}
         eventTimes={eventTimes}
         series={[
-          { label: "BT", color: "#60a5fa", values: bt },
-          { label: "ET", color: "#f87171", values: et },
-          { label: "Setpoint", color: "#34d399", values: setpoint },
+          { label: "BT", color: "#60a5fa", values: maybeExtendSeries(bt, null) },
+          { label: "ET", color: "#f87171", values: maybeExtendSeries(et, null) },
+          { label: "Setpoint", color: "#34d399", values: maybeExtendSeries(setpoint, null) },
           ...(profileSetpoint.length
-            ? [{ label: "Profile", color: "#facc15", values: profileSetpoint }]
+            ? [{ label: "Profile", color: "#facc15", values: maybeExtendSeries(profileSetpoint, profileSetpoint[profileSetpoint.length - 1]) }]
             : []),
-          { label: "Fan % (x3)", color: "#38bdf8", values: fan.map((v) => v * 3) },
-          { label: "Heater % (x3)", color: "#fb923c", values: heater.map((v) => v * 3) },
-          { label: "BT RoR (x5)", color: "#22c55e", values: btRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)) },
-          { label: "ET RoR (x5)", color: "#a855f7", values: etRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)) },
+          { label: "Fan % (x3)", color: "#38bdf8", values: maybeExtendSeries(fan.map((v) => v * 3), null) },
+          { label: "Heater % (x3)", color: "#fb923c", values: maybeExtendSeries(heater.map((v) => v * 3), null) },
+          { label: "BT RoR (x5)", color: "#22c55e", values: maybeExtendSeries(btRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
+          { label: "ET RoR (x5)", color: "#a855f7", values: maybeExtendSeries(etRor.map((v) => (v == null ? null : Math.max(v, 0) * 5)), null) },
         ]}
       />
     );
@@ -287,42 +301,176 @@ export function RoastGraphs({
     <div class="graph-stack">
       <VisxLineGraph
         title="Temperature"
-        samples={sampleTimes}
+        samples={chartSamples}
         minY={0}
         maxY={300}
         height={separateHeight}
         eventTimes={eventTimes}
         series={[
-          { label: "BT", color: "#60a5fa", values: bt },
-          { label: "ET", color: "#f87171", values: et },
-          { label: "Setpoint", color: "#34d399", values: setpoint },
+          { label: "BT", color: "#60a5fa", values: maybeExtendSeries(bt, null) },
+          { label: "ET", color: "#f87171", values: maybeExtendSeries(et, null) },
+          { label: "Setpoint", color: "#34d399", values: maybeExtendSeries(setpoint, null) },
           ...(profileSetpoint.length
-            ? [{ label: "Profile", color: "#facc15", values: profileSetpoint }]
+            ? [{ label: "Profile", color: "#facc15", values: maybeExtendSeries(profileSetpoint, profileSetpoint[profileSetpoint.length - 1]) }]
             : []),
         ]}
       />
       <VisxLineGraph
         title="Power"
-        samples={sampleTimes}
+        samples={chartSamples}
         minY={0}
         maxY={100}
         height={separateHeight}
         series={[
-          { label: "Fan %", color: "#38bdf8", values: fan },
-          { label: "Heater %", color: "#fb923c", values: heater },
+          { label: "Fan %", color: "#38bdf8", values: maybeExtendSeries(fan, null) },
+          { label: "Heater %", color: "#fb923c", values: maybeExtendSeries(heater, null) },
         ]}
       />
       <VisxLineGraph
         title="Rate of Rise"
-        samples={sampleTimes}
+        samples={chartSamples}
         minY={-5}
         maxY={60}
         height={separateHeight}
         series={[
-          { label: "BT RoR", color: "#22c55e", values: btRor },
-          { label: "ET RoR", color: "#a855f7", values: etRor },
+          { label: "BT RoR", color: "#22c55e", values: maybeExtendSeries(btRor, null) },
+          { label: "ET RoR", color: "#a855f7", values: maybeExtendSeries(etRor, null) },
         ]}
       />
+    </div>
+  );
+}
+
+type ProfileEditorGraphProps = {
+  profile: Profile;
+  onChange: (next: Profile) => void;
+};
+
+type DragMode = "temp" | "fan" | null;
+
+export function ProfileEditorGraph({ profile, onChange }: ProfileEditorGraphProps) {
+  const totalDuration = Math.max(60, profile.steps.reduce((sum, step) => sum + Math.max(1, step.duration), 0));
+  const width = 900;
+  const height = 280;
+  const innerHeight = 220;
+  const margin = { top: 24, right: 28, bottom: 34, left: 52 };
+  const xScale = useMemo(
+    () =>
+      scaleLinear<number>({
+        domain: [0, totalDuration],
+        range: [0, width - margin.left - margin.right],
+      }),
+    [totalDuration],
+  );
+  const tempScale = useMemo(
+    () =>
+      scaleLinear<number>({
+        domain: [0, 300],
+        range: [innerHeight, 0],
+      }),
+    [],
+  );
+  const fanScale = useMemo(
+    () =>
+      scaleLinear<number>({
+        domain: [0, 100],
+        range: [innerHeight, 0],
+      }),
+    [],
+  );
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [dragging, setDragging] = useState<{ index: number; mode: DragMode } | null>(null);
+  const points = useMemo(() => {
+    let elapsed = 0;
+    return profile.steps.map((step, index) => {
+      elapsed += Math.max(1, step.duration);
+      return {
+        index,
+        sec: elapsed,
+        setpoint: step.setpoint,
+        fan: step.fanValue ?? 0,
+      };
+    });
+  }, [profile.steps]);
+
+  const updateFromPointer = (event: PointerEvent) => {
+    if (!dragging || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const localX = event.clientX - rect.left - margin.left;
+    const localY = event.clientY - rect.top - margin.top;
+    const next = {
+      steps: profile.steps.map((s) => ({ ...s })),
+    };
+    const point = points[dragging.index];
+    if (!point) return;
+    if (dragging.mode === "temp") {
+      const temp = Math.max(0, Math.min(300, Math.round(tempScale.invert(localY))));
+      next.steps[dragging.index].setpoint = temp;
+    } else if (dragging.mode === "fan") {
+      const fan = Math.max(0, Math.min(100, Math.round(fanScale.invert(localY) / 5) * 5));
+      next.steps[dragging.index].fanValue = fan;
+    }
+
+    const proposedSec = Math.max(15, Math.min(totalDuration, Math.round(xScale.invert(localX))));
+    if (dragging.index >= 0) {
+      const prevEdge = dragging.index === 0 ? 0 : points[dragging.index - 1].sec;
+      const nextEdge = dragging.index === points.length - 1 ? totalDuration : points[dragging.index + 1].sec;
+      const clampedSec = Math.max(prevEdge + 15, Math.min(nextEdge - 15, proposedSec));
+      const prevSec = point.sec;
+      const delta = clampedSec - prevSec;
+      next.steps[dragging.index].duration = Math.max(15, next.steps[dragging.index].duration + delta);
+      if (dragging.index + 1 < next.steps.length) {
+        next.steps[dragging.index + 1].duration = Math.max(15, next.steps[dragging.index + 1].duration - delta);
+      }
+    }
+    onChange(next);
+  };
+
+  return (
+    <div class="graph-card">
+      <h4>Profile Editor (drag phase points)</h4>
+      <svg
+        ref={svgRef}
+        class="line-graph profile-editor-graph"
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        onPointerMove={(event) => updateFromPointer(event as unknown as PointerEvent)}
+        onPointerUp={() => setDragging(null)}
+        onPointerLeave={() => setDragging(null)}
+      >
+        <rect x={0} y={0} width={width} height={height} fill="#0f172a" rx={8} />
+        <Group top={margin.top} left={margin.left}>
+          {gridTicks(0, 300, 6).map((tick) => (
+            <line key={`t-${tick}`} x1={0} y1={tempScale(tick)} x2={width - margin.left - margin.right} y2={tempScale(tick)} stroke="rgba(148,163,184,0.18)" />
+          ))}
+          <AxisBottom top={innerHeight} scale={xScale} numTicks={6} stroke="#94a3b8" tickStroke="#94a3b8" tickLabelProps={() => ({ fill: "#94a3b8", fontSize: 11, textAnchor: "middle", dy: "0.25em" })} />
+          <AxisLeft scale={tempScale} numTicks={7} stroke="#cbd5e1" tickStroke="#cbd5e1" tickLabelProps={() => ({ fill: "#cbd5e1", fontSize: 11, textAnchor: "end", dx: "-0.3em", dy: "0.25em" })} />
+          <LinePath data={points} x={(d) => xScale(d.sec)} y={(d) => tempScale(d.setpoint)} stroke="#facc15" strokeWidth={2.2} fill="none" />
+          <LinePath data={points} x={(d) => xScale(d.sec)} y={(d) => fanScale(d.fan)} stroke="#38bdf8" strokeWidth={1.8} fill="none" strokeDasharray="4 3" />
+          {points.map((point) => (
+            <g key={`point-${point.index}`}>
+              <circle
+                cx={xScale(point.sec)}
+                cy={tempScale(point.setpoint)}
+                r={6}
+                fill="#facc15"
+                onPointerDown={() => setDragging({ index: point.index, mode: "temp" })}
+              />
+              <circle
+                cx={xScale(point.sec)}
+                cy={fanScale(point.fan)}
+                r={5}
+                fill="#38bdf8"
+                onPointerDown={() => setDragging({ index: point.index, mode: "fan" })}
+              />
+            </g>
+          ))}
+        </Group>
+      </svg>
+      <div class="graph-legend">
+        <span><i style={{ backgroundColor: "#facc15" }} /> Temp setpoint</span>
+        <span><i style={{ backgroundColor: "#38bdf8" }} /> Fan (%)</span>
+      </div>
     </div>
   );
 }

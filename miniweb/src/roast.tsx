@@ -646,7 +646,21 @@ export function RoastApp() {
 
       <div class="section">
         <h3>Profile Selection</h3>
-        <ProfileControl onStateChange={() => setRefreshToken((v) => v + 1)} />
+        <ProfileControl
+          onStateChange={() => setRefreshToken((v) => v + 1)}
+          onProfileChange={(profile) => {
+            setState((prev) => {
+              if (!prev.roast) return prev;
+              return {
+                ...prev,
+                roast: {
+                  ...prev.roast,
+                  profile,
+                },
+              };
+            });
+          }}
+        />
       </div>
       <div style="display:none">{refreshToken}</div>
     </div>
