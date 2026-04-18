@@ -429,7 +429,7 @@ textarea:focus {
   border-radius: 0.65rem;
   padding: 0.65rem;
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr)) auto auto;
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto auto;
   gap: 0.5rem;
   align-items: end;
 }

@@ -18,7 +18,7 @@ export const profileStore: ProfileStore = {
 export function followProfile(
   profile: Profile,
   roast: RoastState,
-): { setPoint: number; fanValue?: number } | undefined {
+): { setPoint: number; fanValue?: number; heaterValue?: number } | undefined {
   if (!roast.startDate) return undefined;
 
   const elapsedTime = (new Date().getTime() - roast.startDate.getTime()) / 1000;
@@ -46,6 +46,7 @@ export function followProfile(
             ) * 10,
           ) / 10,
         fanValue: step.fanValue,
+        heaterValue: step.heaterValue,
       };
     }
   }
@@ -54,6 +55,7 @@ export function followProfile(
     ? {
         setPoint: profile.steps[profile.steps.length - 1].setpoint,
         fanValue: profile.steps[profile.steps.length - 1].fanValue,
+        heaterValue: profile.steps[profile.steps.length - 1].heaterValue,
       }
     : undefined;
 }
@@ -96,10 +98,10 @@ type ProfileControlProps = {
 
 const DEFAULT_PROFILE: Profile = {
   steps: [
-    { interpolation: "linear", setpoint: 160, duration: 180, fanValue: 30 },
-    { interpolation: "linear", setpoint: 185, duration: 180, fanValue: 40 },
-    { interpolation: "linear", setpoint: 205, duration: 120, fanValue: 55 },
-    { interpolation: "linear", setpoint: 220, duration: 120, fanValue: 65 },
+    { interpolation: "linear", setpoint: 160, duration: 180, fanValue: 30, heaterValue: 58 },
+    { interpolation: "linear", setpoint: 185, duration: 180, fanValue: 40, heaterValue: 65 },
+    { interpolation: "linear", setpoint: 205, duration: 120, fanValue: 55, heaterValue: 72 },
+    { interpolation: "linear", setpoint: 220, duration: 120, fanValue: 65, heaterValue: 78 },
   ],
 };
 
@@ -110,10 +112,10 @@ const BUILT_IN_PROFILES: Array<{ id: string; name: string; profile: Profile }> =
     name: "Balanced 12 min",
     profile: {
       steps: [
-        { interpolation: "linear", setpoint: 155, duration: 180, fanValue: 30 },
-        { interpolation: "linear", setpoint: 180, duration: 210, fanValue: 40 },
-        { interpolation: "linear", setpoint: 198, duration: 180, fanValue: 50 },
-        { interpolation: "linear", setpoint: 212, duration: 150, fanValue: 60 },
+        { interpolation: "linear", setpoint: 155, duration: 180, fanValue: 30, heaterValue: 60 },
+        { interpolation: "linear", setpoint: 180, duration: 210, fanValue: 40, heaterValue: 67 },
+        { interpolation: "linear", setpoint: 198, duration: 180, fanValue: 50, heaterValue: 72 },
+        { interpolation: "linear", setpoint: 212, duration: 150, fanValue: 60, heaterValue: 78 },
       ],
     },
   },
@@ -122,10 +124,10 @@ const BUILT_IN_PROFILES: Array<{ id: string; name: string; profile: Profile }> =
     name: "Development forward 14 min",
     profile: {
       steps: [
-        { interpolation: "linear", setpoint: 150, duration: 240, fanValue: 25 },
-        { interpolation: "linear", setpoint: 175, duration: 240, fanValue: 35 },
-        { interpolation: "linear", setpoint: 200, duration: 210, fanValue: 50 },
-        { interpolation: "linear", setpoint: 220, duration: 150, fanValue: 70 },
+        { interpolation: "linear", setpoint: 150, duration: 240, fanValue: 25, heaterValue: 58 },
+        { interpolation: "linear", setpoint: 175, duration: 240, fanValue: 35, heaterValue: 64 },
+        { interpolation: "linear", setpoint: 200, duration: 210, fanValue: 50, heaterValue: 72 },
+        { interpolation: "linear", setpoint: 220, duration: 150, fanValue: 70, heaterValue: 80 },
       ],
     },
   },
@@ -284,6 +286,22 @@ export function ProfileControl({
                       const value = Number((e.target as HTMLInputElement).value);
                       const next = { steps: profileStore.profile!.steps.map((item) => ({ ...item })) };
                       next.steps[index].fanValue = Number.isFinite(value) ? value : step.fanValue ?? 0;
+                      notifyProfileChange(next);
+                    }}
+                  />
+                </label>
+                <label>
+                  Heater %
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={step.heaterValue ?? 0}
+                    onInput={(e) => {
+                      const value = Number((e.target as HTMLInputElement).value);
+                      const next = { steps: profileStore.profile!.steps.map((item) => ({ ...item })) };
+                      next.steps[index].heaterValue = Number.isFinite(value) ? value : step.heaterValue ?? 0;
                       notifyProfileChange(next);
                     }}
                   />

@@ -113,4 +113,5 @@ export type ProfileStep = {
 	setpoint: number
 	duration: number
   fanValue?: number
+  heaterValue?: number
 }

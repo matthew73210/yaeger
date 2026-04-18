@@ -211,7 +211,7 @@ export function RoastGraphs({
 }) {
   const measurements = roast?.measurements ?? [];
   const start = roast?.startDate;
-  const activeProfile = roast?.profile ?? profile;
+  const activeProfile = profile ?? roast?.profile;
 
   if (!start || measurements.length < 2) {
     if (!activeProfile?.steps.length) {
