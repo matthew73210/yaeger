@@ -18,10 +18,12 @@ export const profileStore: ProfileStore = {
 export function followProfile(
   profile: Profile,
   roast: RoastState,
+  profileStartDate?: Date,
 ): { setPoint: number; fanValue?: number } | undefined {
-  if (!roast.startDate) return undefined;
+  const startDate = profileStartDate ?? roast.startDate;
+  if (!startDate) return undefined;
 
-  const elapsedTime = (new Date().getTime() - roast.startDate.getTime()) / 1000;
+  const elapsedTime = (new Date().getTime() - startDate.getTime()) / 1000;
   let accumulatedTime = 0;
 
   for (const step of profile.steps) {
@@ -91,7 +93,7 @@ function isValidProfile(obj: unknown): obj is Profile {
 type ProfileControlProps = {
   onStateChange: () => void;
   onProfileChange?: (profile?: Profile) => void;
-  onFollowProfileToggle?: (enabled: boolean) => void;
+  onProfileLoadToggle?: (enabled: boolean) => void;
 };
 
 const DEFAULT_PROFILE: Profile = {
@@ -134,7 +136,7 @@ const BUILT_IN_PROFILES: Array<{ id: string; name: string; profile: Profile }> =
 export function ProfileControl({
   onStateChange,
   onProfileChange,
-  onFollowProfileToggle,
+  onProfileLoadToggle,
 }: ProfileControlProps) {
   const [error, setError] = useState("");
   const [selectedBuiltIn, setSelectedBuiltIn] = useState("");
@@ -235,18 +237,31 @@ export function ProfileControl({
           Download profile
         </button>
       </div>
-      <label class="switch-label">
-        <input
-          type="checkbox"
-          checked={profileStore.followProfileEnabled}
-          onChange={(e) => {
-            profileStore.followProfileEnabled = e.currentTarget.checked;
-            onFollowProfileToggle?.(e.currentTarget.checked);
+      <div class="inline-actions">
+        <button
+          disabled={!profileStore.profile}
+          onClick={() => {
+            profileStore.followProfileEnabled = true;
+            onProfileLoadToggle?.(true);
             onStateChange();
           }}
-        />
-        Follow Profile Enabled
-      </label>
+        >
+          Load profile
+        </button>
+        <button
+          disabled={!profileStore.followProfileEnabled}
+          onClick={() => {
+            profileStore.followProfileEnabled = false;
+            onProfileLoadToggle?.(false);
+            onStateChange();
+          }}
+        >
+          Unload profile
+        </button>
+        <span class="profile-chip">
+          {profileStore.followProfileEnabled ? "Profile loaded" : "Profile not loaded"}
+        </span>
+      </div>
       {profileStore.profile && (
         <>
           <ProfileEditorGraph

@@ -39,6 +39,7 @@ export function RoastApp() {
   const [refreshToken, setRefreshToken] = useState(0);
   const [graphMode, setGraphMode] = useState<RoastGraphMode>("separate");
   const [graphHeightScale, setGraphHeightScale] = useState(1.2);
+  const [profileFollowStartDate, setProfileFollowStartDate] = useState<Date | undefined>(undefined);
   const sendCommand = (data: Record<string, unknown>) => {
     const authToken = getAdminSecret();
     sendWsCommand({ ...data, authToken });
@@ -119,7 +120,7 @@ export function RoastApp() {
           profileStore.followProfileEnabled &&
           prev.currentState.status === RoasterStatus.roasting
         ) {
-          const profileUpdate = followProfile(profileStore.profile, next.roast);
+          const profileUpdate = followProfile(profileStore.profile, next.roast, profileFollowStartDate);
           if (profileUpdate) {
             setSetpointTarget(profileUpdate.setPoint);
             sendPidControlConfig(prev.currentState.status, true, profileUpdate.setPoint);
@@ -134,7 +135,7 @@ export function RoastApp() {
 
       return next;
     });
-  }, [kd, ki, kp, lastMessage, lastUpdate, pidEnabled, roastControlActive, setpointTarget]);
+  }, [kd, ki, kp, lastMessage, lastUpdate, pidEnabled, profileFollowStartDate, roastControlActive, setpointTarget]);
 
   useEffect(() => {
     if (connectionStatus === "Connected") {
@@ -275,6 +276,7 @@ export function RoastApp() {
     setRoastControlActive(false);
     setPidEnabled(false);
     profileStore.followProfileEnabled = false;
+    setProfileFollowStartDate(undefined);
     setRefreshToken((v) => v + 1);
     setSetpointTarget(0);
     setHeater(0);
@@ -307,6 +309,7 @@ export function RoastApp() {
           profile: profileStore.profile,
         },
       }));
+      setProfileFollowStartDate(profileStore.followProfileEnabled ? new Date() : undefined);
       setRoastControlActive(false);
       sendCommand({ id: 1, command: "startRoastSession" });
       sendPidControlConfig(RoasterStatus.roasting, false);
@@ -322,6 +325,7 @@ export function RoastApp() {
       currentState: { ...prev.currentState, status: RoasterStatus.idle },
       roast: prev.roast,
     }));
+    setProfileFollowStartDate(undefined);
     sendCommand({ id: 1, command: "endRoastSession" });
     sendPidControlConfig(RoasterStatus.idle, false);
   };
@@ -333,6 +337,7 @@ export function RoastApp() {
       currentState: { ...prev.currentState, status: RoasterStatus.idle },
       roast: undefined,
     }));
+    setProfileFollowStartDate(undefined);
   };
 
   const appendEvent = (label: string) => {
@@ -490,6 +495,14 @@ export function RoastApp() {
         mode={graphMode}
         heightScale={graphHeightScale}
         profile={profileStore.profile}
+        profileStartOffsetSec={
+          state.roast && profileFollowStartDate
+            ? Math.max(
+                0,
+                (profileFollowStartDate.getTime() - state.roast.startDate.getTime()) / 1000,
+              )
+            : 0
+        }
       />
 
       <section class="control-panel">
@@ -664,13 +677,17 @@ export function RoastApp() {
               };
             });
           }}
-          onFollowProfileToggle={(enabled) => {
-            if (!enabled) return;
+          onProfileLoadToggle={(enabled) => {
+            if (!enabled) {
+              setProfileFollowStartDate(undefined);
+              return;
+            }
+            const followStart = new Date();
+            setProfileFollowStartDate(followStart);
+            if (state.currentState.status !== RoasterStatus.roasting || !profileStore.profile || !state.roast) return;
             setPidEnabled(true);
-            if (state.currentState.status !== RoasterStatus.roasting || !profileStore.profile) return;
             const roast = state.roast;
-            if (!roast) return;
-            const profileUpdate = followProfile(profileStore.profile, roast);
+            const profileUpdate = followProfile(profileStore.profile, roast, followStart);
             if (!profileUpdate) return;
             setSetpointTarget(profileUpdate.setPoint);
             sendPidControlConfig(state.currentState.status, true, profileUpdate.setPoint);

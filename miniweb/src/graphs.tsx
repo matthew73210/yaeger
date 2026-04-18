@@ -203,11 +203,13 @@ export function RoastGraphs({
   mode = "separate",
   heightScale = 1,
   profile,
+  profileStartOffsetSec = 0,
 }: {
   roast?: RoastState;
   mode?: RoastGraphMode;
   heightScale?: number;
   profile?: Profile;
+  profileStartOffsetSec?: number;
 }) {
   const measurements = roast?.measurements ?? [];
   const start = roast?.startDate;
@@ -256,7 +258,11 @@ export function RoastGraphs({
   const btRor = buildRoR(bt, sampleTimes);
   const etRor = buildRoR(et, sampleTimes);
   const profileSetpoint = activeProfile
-    ? sampleTimes.map((seconds) => getProfileSetpointAtElapsed(activeProfile, seconds))
+    ? sampleTimes.map((seconds) =>
+        seconds < profileStartOffsetSec
+          ? null
+          : getProfileSetpointAtElapsed(activeProfile, seconds - profileStartOffsetSec),
+      )
     : [];
   const fullTimelineEnd =
     activeProfile?.steps.length
