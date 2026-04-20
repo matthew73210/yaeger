@@ -5,14 +5,15 @@ import { sendWsCommand, useSocketState } from "./websocket";
 
 type PidTarget = "BT" | "ET" | "simBT";
 type PidMethod = "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot";
-type ControlMode = "pid" | "adrc";
+type ControlMode = "pid" | "adrc" | "fuzzy" | "mpc";
+type AutotuneMode = "pid" | "adrc";
 
 export function AutotuneApp() {
   const { lastMessage } = useSocketState();
   const [target, setTarget] = useState<PidTarget>("BT");
   const [method, setMethod] = useState<PidMethod>("ziegler-nichols");
   const [controlMode, setControlMode] = useState<ControlMode>("pid");
-  const [autotuneMode, setAutotuneMode] = useState<ControlMode>("pid");
+  const [autotuneMode, setAutotuneMode] = useState<AutotuneMode>("pid");
   const [setpoint, setSetpoint] = useState(20);
   const [fanSpeed, setFanSpeed] = useState(50);
   const [minHeaterPwm, setMinHeaterPwm] = useState(0);
@@ -56,7 +57,12 @@ export function AutotuneApp() {
     const pidAutotuneJustCompleted = wasPidAutotuneRunning.current && !pidAutotuneRunning;
     const adrcAutotuneJustCompleted = wasAdrcAutotuneRunning.current && !adrcAutotuneRunning;
 
-    if (lastMessage.controlMode === "pid" || lastMessage.controlMode === "adrc") {
+    if (
+      lastMessage.controlMode === "pid" ||
+      lastMessage.controlMode === "adrc" ||
+      lastMessage.controlMode === "fuzzy" ||
+      lastMessage.controlMode === "mpc"
+    ) {
       if (!controlModeDirty.current) {
         setControlMode(lastMessage.controlMode);
       } else if (lastMessage.controlMode === controlMode) {
@@ -277,14 +283,14 @@ export function AutotuneApp() {
             setControlMode((e.target as HTMLSelectElement).value as ControlMode);
           }}
         >
-          <option value="pid">PID</option><option value="adrc">ADRC</option>
+          <option value="pid">PID</option><option value="adrc">ADRC</option><option value="fuzzy">Fuzzy</option><option value="mpc">MPC</option>
         </select>
         <label>Autotune mode</label>
         <select
           value={autotuneMode}
           onChange={(e) => {
             autotuneModeDirty.current = true;
-            setAutotuneMode((e.target as HTMLSelectElement).value as ControlMode);
+            setAutotuneMode((e.target as HTMLSelectElement).value as AutotuneMode);
           }}
         >
           <option value="pid">PID</option><option value="adrc">ADRC</option>

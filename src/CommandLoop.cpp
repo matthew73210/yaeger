@@ -1,3 +1,4 @@
+#include "ControlFramework.h"
 #include "fan.h"
 #include "heater.h"
 #include "logging.h"
@@ -28,7 +29,7 @@ constexpr const char *PREF_PID_MEASURED_DELAY_SEC = "pidMeasSec";
 constexpr const char *PREF_PID_PREDICTOR_ENABLED = "pidPredEn";
 unsigned long lastPidUpdateMs = 0;
 constexpr unsigned long ROAST_HISTORY_SAMPLE_INTERVAL_MS = 1000;
-constexpr size_t ROAST_HISTORY_MAX_SAMPLES = 1800;
+constexpr size_t ROAST_HISTORY_MAX_SAMPLES = 1200;
 
 double pidIntegral = 0.0;
 double pidPreviousError = 0.0;
@@ -44,6 +45,41 @@ double pidPreviousTemp = NAN;
 bool pidHasPreviousTemp = false;
 double pidProcessDelaySeconds = 0.0;
 bool pidPredictorEnabled = true;
+double pidDerivativeFilterAlpha = 0.30;
+double pidSmithModelGain = 0.02;
+double pidSmithModelTauSeconds = 20.0;
+
+control::SignalPreprocessor signalPreprocessor;
+control::SafetyMonitor safetyMonitor;
+control::PidController pidController;
+control::AdrcController scheduledAdrcController;
+control::FuzzyController fuzzyController;
+control::MpcController mpcController;
+control::ScheduledTable<control::AdrcParams, 3, 3> adrcSchedule;
+control::ScheduledTable<control::MpcModel, 3, 3> mpcSchedule;
+control::RawSignals lastRawSignals;
+control::ProcessSignals controlSignals;
+control::ControlOutput lastControlOutput;
+control::SafetyDecision lastSafetyDecision;
+control::NoBeanIdentificationEstimator noBeanEstimator;
+uint32_t activeControlAlarms = 0;
+bool controllersNeedReset = true;
+bool adrcScheduleEnabled = true;
+double controlTbSetpoint = NAN;
+double controlTeSetpoint = NAN;
+double controlRorSetpoint = NAN;
+double controlHeaterSlewPerSec = 25.0;
+double controlFanSlewPerSec = 12.0;
+double preprocessingTbAlpha = 0.25;
+double preprocessingTeAlpha = 0.25;
+double preprocessingDTAlpha = 0.25;
+double preprocessingRorAlpha = 0.20;
+double fuzzyETScale = 20.0;
+double fuzzyERorScale = 20.0;
+double fuzzyDTLow = 10.0;
+double fuzzyDTHigh = 70.0;
+double fuzzyHeaterStepScale = 8.0;
+double fuzzyFanStepScale = 5.0;
 
 double pidSetpoint = 20.0;
 bool pidEnabled = true;
@@ -51,7 +87,7 @@ enum class PidTargetSensor { BT, ET, SIM_BT };
 PidTargetSensor pidTarget = PidTargetSensor::BT;
 enum class PidTuneMethod { ZIEGLER_NICHOLS, TYREUS_LUYBEN, PESSEN_INTEGRAL, NO_OVERSHOOT };
 PidTuneMethod pidTuneMethod = PidTuneMethod::ZIEGLER_NICHOLS;
-enum class ControlMode { PID, ADRC };
+enum class ControlMode { PID, ADRC, FUZZY, MPC };
 ControlMode controlMode = ControlMode::PID;
 enum class AutotuneMode { PID, ADRC };
 AutotuneMode autotuneMode = AutotuneMode::PID;
@@ -99,6 +135,18 @@ double adrcB0 = 0.02;
 double adrcW0 = 1.0;
 double adrcWc = 0.25;
 bool adrcFanControlEnabled = true;
+
+enum class NoBeanIdState { IDLE, BASELINE, HEATER_STEP, FAN_STEP, COMPLETE };
+NoBeanIdState noBeanIdState = NoBeanIdState::IDLE;
+unsigned long noBeanIdStartMs = 0;
+unsigned long noBeanIdPhaseStartMs = 0;
+double noBeanIdFan = 50.0;
+double noBeanIdHeaterLow = 0.0;
+double noBeanIdHeaterHigh = 60.0;
+double noBeanIdFanHigh = 70.0;
+unsigned long noBeanIdBaselineMs = 15000;
+unsigned long noBeanIdStepMs = 35000;
+control::NoBeanCharacteristics noBeanCharacteristics;
 
 enum class PidDelayMeasureState { IDLE, STABILIZING, HEATING, COMPLETE, FAILED };
 PidDelayMeasureState pidDelayMeasureState = PidDelayMeasureState::IDLE;
@@ -217,9 +265,24 @@ struct RoastHistorySample {
   float bt;
   float amb;
   float simBt;
+  float dT;
+  float ror;
   long burnerVal;
   long fanVal;
-  double setpoint;
+  float heaterRaw;
+  float fanRaw;
+  float setpoint;
+  float tbSetpoint;
+  float teSetpoint;
+  float rorSetpoint;
+  float modelState1;
+  float modelState2;
+  float modelState3;
+  float estimatedLagSec;
+  uint32_t alarms;
+  bool heaterSaturated;
+  bool fanSaturated;
+  uint8_t mode;
   bool pidEnabled;
 };
 
@@ -241,7 +304,8 @@ bool isMutatingCommand(const char *command) {
          strncmp(command, "setPreferences", 14) == 0 || strncmp(command, "setPidControl", 13) == 0 ||
          strncmp(command, "startRoastSession", 17) == 0 || strncmp(command, "endRoastSession", 15) == 0 ||
          strncmp(command, "clearRoastHistory", 17) == 0 || strncmp(command, "emergencyStop", 13) == 0 ||
-         strncmp(command, "clearEmergencyStop", 18) == 0;
+         strncmp(command, "clearEmergencyStop", 18) == 0 || strncmp(command, "startNoBeanIdentification", 25) == 0 ||
+         strncmp(command, "stopNoBeanIdentification", 24) == 0;
 }
 
 bool enforceMutatingCommandAuth(AsyncWebSocketClient *client, JsonDocument &doc) {
@@ -301,6 +365,10 @@ const char *controlModeToString(ControlMode mode) {
   switch (mode) {
   case ControlMode::ADRC:
     return "adrc";
+  case ControlMode::FUZZY:
+    return "fuzzy";
+  case ControlMode::MPC:
+    return "mpc";
   default:
     return "pid";
   }
@@ -312,6 +380,14 @@ bool parseControlMode(const char *value, ControlMode &modeOut) {
   }
   if (strncmp(value, "adrc", 4) == 0) {
     modeOut = ControlMode::ADRC;
+    return true;
+  }
+  if (strncmp(value, "fuzzy", 5) == 0) {
+    modeOut = ControlMode::FUZZY;
+    return true;
+  }
+  if (strncmp(value, "mpc", 3) == 0) {
+    modeOut = ControlMode::MPC;
     return true;
   }
   if (strncmp(value, "pid", 3) == 0) {
@@ -398,6 +474,191 @@ bool parsePidMethod(const char *methodValue, PidTuneMethod &methodOut) {
     return true;
   }
   return false;
+}
+
+double getPidGain(const char *baseKey, PidTargetSensor target, double defaultValue);
+
+const char *noBeanIdStateToString(NoBeanIdState state) {
+  switch (state) {
+  case NoBeanIdState::BASELINE:
+    return "baseline";
+  case NoBeanIdState::HEATER_STEP:
+    return "heater_step";
+  case NoBeanIdState::FAN_STEP:
+    return "fan_step";
+  case NoBeanIdState::COMPLETE:
+    return "complete";
+  default:
+    return "idle";
+  }
+}
+
+control::Mode toFrameworkMode(ControlMode mode) {
+  switch (mode) {
+  case ControlMode::ADRC:
+    return control::Mode::ADRC;
+  case ControlMode::FUZZY:
+    return control::Mode::FUZZY;
+  case ControlMode::MPC:
+    return control::Mode::MPC;
+  default:
+    return control::Mode::PID;
+  }
+}
+
+control::FanEnvelope currentFanEnvelope() {
+  control::FanEnvelope envelope;
+  envelope.min = controlFanMin;
+  envelope.max = controlFanMax;
+  return envelope;
+}
+
+control::RawSignals readRawControlSignals(const float *etbt, bool gotReading) {
+  control::RawSignals raw;
+  raw.ms = millis();
+  raw.te = gotReading ? etbt[0] : NAN;
+  raw.tb = gotReading ? etbt[1] : NAN;
+  raw.ambient = gotReading ? etbt[2] : NAN;
+  raw.simTb = getSimulatedInternalBeanTemp();
+  raw.sampleAgeMs = raw.ms - getLastSensorUpdateMs();
+  raw.probesHealthy = gotReading && getExhaustSensorError() == SENSOR_OK && getBeanSensorError() == SENSOR_OK;
+  return raw;
+}
+
+double readControlTargetTemp(PidTargetSensor target, const control::ProcessSignals &signals) {
+  if (target == PidTargetSensor::ET) {
+    return signals.te;
+  }
+  if (target == PidTargetSensor::SIM_BT) {
+    return signals.simTb;
+  }
+  return signals.tb;
+}
+
+void configureControlFramework() {
+  control::SignalFilterConfig filterConfig;
+  filterConfig.tbAlpha = preprocessingTbAlpha;
+  filterConfig.teAlpha = preprocessingTeAlpha;
+  filterConfig.dTAlpha = preprocessingDTAlpha;
+  filterConfig.rorAlpha = preprocessingRorAlpha;
+  signalPreprocessor.configure(filterConfig);
+
+  control::SafetyConfig safetyConfig;
+  safetyConfig.minFanWhenHeating = controlFanMin;
+  safetyMonitor.configure(safetyConfig);
+}
+
+void initializeScheduledTables() {
+  const double fanAxis[3] = {30.0, 55.0, 80.0};
+  const double heaterAxis[3] = {20.0, 55.0, 90.0};
+  adrcSchedule.setAxes(fanAxis, heaterAxis);
+  mpcSchedule.setAxes(fanAxis, heaterAxis);
+  for (size_t fi = 0; fi < 3; fi++) {
+    for (size_t hi = 0; hi < 3; hi++) {
+      const double fan = fanAxis[fi];
+      const double heater = heaterAxis[hi];
+      control::AdrcParams adrc;
+      adrc.b0 = std::max(0.004, adrcB0 * (1.0 + (55.0 - fan) / 180.0 + (heater - 55.0) / 260.0));
+      adrc.w0 = std::clamp(adrcW0 * (1.0 + (fan - 55.0) / 180.0), 0.2, 4.0);
+      adrc.wc = std::clamp(adrc.w0 / 4.0, 0.05, 1.0);
+      adrc.fanBias = fan;
+      adrc.fanGain = 0.02;
+      adrcSchedule.set(fi, hi, adrc);
+
+      control::MpcModel model;
+      model.aTb = std::clamp(0.986 - (fan - 55.0) * 0.00015, 0.94, 0.995);
+      model.aTe = std::clamp(0.972 - (fan - 55.0) * 0.00025, 0.90, 0.990);
+      model.bTbHeater = std::max(0.005, 0.025 + (heater - 55.0) * 0.00008 - (fan - 55.0) * 0.00005);
+      model.bTeHeater = std::max(0.010, 0.060 + (heater - 55.0) * 0.00012);
+      model.bTbFan = -std::max(0.002, 0.010 + (heater - 55.0) * 0.00004);
+      model.bTeFan = -std::max(0.006, 0.035 + (heater - 55.0) * 0.00008);
+      mpcSchedule.set(fi, hi, model);
+    }
+  }
+}
+
+void resetFrameworkControllers() {
+  const double currentHeater = getHeaterPower();
+  const double currentFan = getFanSpeed();
+  pidController.reset(currentHeater);
+  scheduledAdrcController.reset(std::isfinite(controlSignals.tb) ? controlSignals.tb : pidCurrentTemp, currentHeater);
+  fuzzyController.reset(currentHeater, currentFan);
+  mpcController.reset(currentHeater, currentFan);
+  controllersNeedReset = false;
+}
+
+control::ControlRequest buildControlRequest(double dtSeconds) {
+  control::ControlRequest request;
+  request.signals = controlSignals;
+  request.setpoints.tb = std::isfinite(controlTbSetpoint) ? controlTbSetpoint : pidSetpoint;
+  request.setpoints.te = controlTeSetpoint;
+  request.setpoints.ror = controlRorSetpoint;
+  request.heaterFeedback = getHeaterPower();
+  request.fanFeedback = getFanSpeed();
+  request.limits.heaterMin = 0.0;
+  request.limits.heaterMax = 100.0;
+  request.limits.fan = currentFanEnvelope();
+  request.limits.heaterSlewPerSec = controlHeaterSlewPerSec;
+  request.limits.fanSlewPerSec = controlFanSlewPerSec;
+  request.dtSeconds = dtSeconds;
+  return request;
+}
+
+control::PidParams activePidParams() {
+  control::PidParams params;
+  params.kp = getPidGain("pidKp", pidTarget, 1.0);
+  params.ki = getPidGain("pidKi", pidTarget, 0.1);
+  params.kd = getPidGain("pidKd", pidTarget, 0.01);
+  params.derivativeAlpha = pidDerivativeFilterAlpha;
+  params.outputAlpha = PID_OUTPUT_SMOOTHING_ALPHA;
+  params.modelGain = pidSmithModelGain;
+  params.modelTauSeconds = pidSmithModelTauSeconds;
+  params.measuredLagSeconds = pidProcessDelaySeconds;
+  params.smithPredictorEnabled = pidPredictorEnabled;
+  return params;
+}
+
+control::AdrcParams activeAdrcParams() {
+  control::AdrcParams params;
+  if (adrcScheduleEnabled) {
+    params = adrcSchedule.lookup(getFanSpeed(), getHeaterPower());
+  } else {
+    params.b0 = adrcB0;
+    params.w0 = adrcW0;
+    params.wc = adrcWc;
+  }
+  params.b0 = std::max(0.001, params.b0);
+  params.w0 = std::max(0.1, params.w0);
+  params.wc = std::max(0.05, params.wc);
+  return params;
+}
+
+control::FuzzyParams activeFuzzyParams() {
+  control::FuzzyParams params;
+  params.eTScale = fuzzyETScale;
+  params.eRorScale = fuzzyERorScale;
+  params.dTLow = fuzzyDTLow;
+  params.dTHigh = fuzzyDTHigh;
+  params.heaterStepScale = fuzzyHeaterStepScale;
+  params.fanStepScale = fuzzyFanStepScale;
+  return params;
+}
+
+void applyControlOutput(const control::ControlOutput &output) {
+  double heaterCommand = output.heater;
+  double fanCommand = std::isfinite(output.fan) ? output.fan : getFanSpeed();
+  lastSafetyDecision = safetyMonitor.evaluate(lastRawSignals, controlSignals, heaterCommand, fanCommand, currentFanEnvelope());
+  activeControlAlarms = output.alarms | lastSafetyDecision.alarms;
+  if (lastSafetyDecision.forceHeaterOff) {
+    heaterCommand = 0.0;
+  }
+  if (lastSafetyDecision.forceFanMinimum || (heaterCommand > 0.0 && fanCommand < controlFanMin)) {
+    fanCommand = std::max(fanCommand, controlFanMin);
+  }
+  setHeaterPower(lround(std::clamp(heaterCommand, 0.0, 100.0)));
+  if (std::isfinite(output.fan) || fanCommand < controlFanMin || lastSafetyDecision.forceFanMinimum) {
+    setFanSpeed(lround(std::clamp(fanCommand, 0.0, 100.0)));
+  }
 }
 
 String pidTargetPreferenceKey(const char *baseKey, PidTargetSensor target) {
@@ -505,6 +766,30 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc, cons
       client->text("{\"error\":\"invalid schema: pidPredictorEnabled must be boolean\"}");
       return false;
     }
+    if (!doc["pidDerivativeFilterAlpha"].isNull() && !doc["pidDerivativeFilterAlpha"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: pidDerivativeFilterAlpha must be numeric\"}");
+      return false;
+    }
+    if (!doc["pidSmithModelGain"].isNull() && !doc["pidSmithModelGain"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: pidSmithModelGain must be numeric\"}");
+      return false;
+    }
+    if (!doc["pidSmithModelTauSec"].isNull() && !doc["pidSmithModelTauSec"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: pidSmithModelTauSec must be numeric\"}");
+      return false;
+    }
+    if (!doc["tbSetpoint"].isNull() && !doc["tbSetpoint"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: tbSetpoint must be numeric\"}");
+      return false;
+    }
+    if (!doc["teSetpoint"].isNull() && !doc["teSetpoint"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: teSetpoint must be numeric\"}");
+      return false;
+    }
+    if (!doc["rorSetpoint"].isNull() && !doc["rorSetpoint"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: rorSetpoint must be numeric\"}");
+      return false;
+    }
     if (!doc["controlMode"].isNull() && !doc["controlMode"].is<const char *>()) {
       client->text("{\"error\":\"invalid schema: controlMode must be string\"}");
       return false;
@@ -541,6 +826,34 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc, cons
       client->text("{\"error\":\"invalid schema: adrcWc must be numeric\"}");
       return false;
     }
+    if (!doc["adrcScheduleEnabled"].isNull() && !doc["adrcScheduleEnabled"].is<bool>()) {
+      client->text("{\"error\":\"invalid schema: adrcScheduleEnabled must be boolean\"}");
+      return false;
+    }
+    if (!doc["controlHeaterSlewPerSec"].isNull() && !doc["controlHeaterSlewPerSec"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: controlHeaterSlewPerSec must be numeric\"}");
+      return false;
+    }
+    if (!doc["controlFanSlewPerSec"].isNull() && !doc["controlFanSlewPerSec"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: controlFanSlewPerSec must be numeric\"}");
+      return false;
+    }
+    if (!doc["filterTbAlpha"].isNull() && !doc["filterTbAlpha"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: filterTbAlpha must be numeric\"}");
+      return false;
+    }
+    if (!doc["filterTeAlpha"].isNull() && !doc["filterTeAlpha"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: filterTeAlpha must be numeric\"}");
+      return false;
+    }
+    if (!doc["filterDTAlpha"].isNull() && !doc["filterDTAlpha"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: filterDTAlpha must be numeric\"}");
+      return false;
+    }
+    if (!doc["filterRorAlpha"].isNull() && !doc["filterRorAlpha"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: filterRorAlpha must be numeric\"}");
+      return false;
+    }
   }
 
   return true;
@@ -574,6 +887,7 @@ void resetPidState() {
   pidTempSlope = 0.0;
   pidPreviousTemp = NAN;
   pidHasPreviousTemp = false;
+  pidController.reset(pidSmoothedOutput);
 }
 
 void resetAdrcState() {
@@ -581,6 +895,7 @@ void resetAdrcState() {
   adrcObserverZ2 = 0.0;
   adrcObserverZ3 = 0.0;
   adrcLastCommand = getHeaterPower();
+  scheduledAdrcController.reset(std::isfinite(controlSignals.tb) ? controlSignals.tb : pidCurrentTemp, adrcLastCommand);
 }
 
 void startPidAutotune() {
@@ -649,7 +964,7 @@ void startPidDelayMeasurement() {
   pidEnabled = false;
   pidAutotuneActive = false;
   preferences.putBool("pidEnabled", false);
-  setFanSpeed(lround(std::clamp(pidDelayMeasureFan, 0.0, 100.0)));
+  setFanSpeed(lround(std::clamp(pidDelayMeasureFan, controlFanMin, 100.0)));
   setHeaterPower(0);
   logf("PID delay measurement started (fan=%.1f, heater=%.1f)\n", pidDelayMeasureFan, pidDelayMeasureHeater);
 }
@@ -842,6 +1157,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
           preferences.putString("controlMode", controlModeToString(controlMode));
           resetPidState();
           resetAdrcState();
+          controllersNeedReset = true;
         }
       }
       if (!doc["autotuneMode"].isNull()) {
@@ -855,7 +1171,19 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       }
       if (!doc["setpoint"].isNull()) {
         pidSetpoint = doc["setpoint"].as<double>();
+        controlTbSetpoint = pidSetpoint;
         preferences.putDouble("pidSetpoint", pidSetpoint);
+      }
+      if (!doc["tbSetpoint"].isNull()) {
+        controlTbSetpoint = doc["tbSetpoint"].as<double>();
+        pidSetpoint = controlTbSetpoint;
+        preferences.putDouble("pidSetpoint", pidSetpoint);
+      }
+      if (!doc["teSetpoint"].isNull()) {
+        controlTeSetpoint = doc["teSetpoint"].as<double>();
+      }
+      if (!doc["rorSetpoint"].isNull()) {
+        controlRorSetpoint = doc["rorSetpoint"].as<double>();
       }
       if (!doc["controlFanMin"].isNull()) {
         controlFanMin = std::clamp(doc["controlFanMin"].as<double>(), 0.0, 100.0);
@@ -870,6 +1198,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       }
       preferences.putDouble("controlFanMin", controlFanMin);
       preferences.putDouble("controlFanMax", controlFanMax);
+      configureControlFramework();
       if (!doc["adrcFanControlEnabled"].isNull()) {
         adrcFanControlEnabled = doc["adrcFanControlEnabled"].as<bool>();
         preferences.putBool("adrcFanCtrl", adrcFanControlEnabled);
@@ -879,6 +1208,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         if (pidEnabled != nextPidEnabled) {
           resetPidState();
           resetAdrcState();
+          controllersNeedReset = true;
         }
         pidEnabled = nextPidEnabled;
         preferences.putBool("pidEnabled", pidEnabled);
@@ -889,6 +1219,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
           pidTarget = parsedTarget;
           preferences.putString("pidTarget", pidTargetToString(pidTarget));
           resetPidState();
+          controllersNeedReset = true;
         } else {
           client->text("{\"error\":\"invalid pidTarget\"}");
           return;
@@ -956,17 +1287,68 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         pidPredictorEnabled = doc["pidPredictorEnabled"].as<bool>();
         preferences.putBool(PREF_PID_PREDICTOR_ENABLED, pidPredictorEnabled);
       }
+      if (!doc["pidDerivativeFilterAlpha"].isNull()) {
+        pidDerivativeFilterAlpha = std::clamp(doc["pidDerivativeFilterAlpha"].as<double>(), 0.0, 1.0);
+        preferences.putDouble("pidDerivAlpha", pidDerivativeFilterAlpha);
+      }
+      if (!doc["pidSmithModelGain"].isNull()) {
+        pidSmithModelGain = std::max(0.0, doc["pidSmithModelGain"].as<double>());
+        preferences.putDouble("pidSmithGain", pidSmithModelGain);
+      }
+      if (!doc["pidSmithModelTauSec"].isNull()) {
+        pidSmithModelTauSeconds = std::max(0.1, doc["pidSmithModelTauSec"].as<double>());
+        preferences.putDouble("pidSmithTau", pidSmithModelTauSeconds);
+      }
       if (!doc["adrcB0"].isNull()) {
         adrcB0 = std::max(0.001, doc["adrcB0"].as<double>());
         preferences.putDouble("adrcB0", adrcB0);
+        initializeScheduledTables();
       }
       if (!doc["adrcW0"].isNull()) {
         adrcW0 = std::max(0.1, doc["adrcW0"].as<double>());
         preferences.putDouble("adrcW0", adrcW0);
+        initializeScheduledTables();
       }
       if (!doc["adrcWc"].isNull()) {
         adrcWc = std::max(0.05, doc["adrcWc"].as<double>());
         preferences.putDouble("adrcWc", adrcWc);
+        initializeScheduledTables();
+      }
+      if (!doc["adrcScheduleEnabled"].isNull()) {
+        adrcScheduleEnabled = doc["adrcScheduleEnabled"].as<bool>();
+        preferences.putBool("adrcSched", adrcScheduleEnabled);
+      }
+      if (!doc["controlHeaterSlewPerSec"].isNull()) {
+        controlHeaterSlewPerSec = std::max(0.1, doc["controlHeaterSlewPerSec"].as<double>());
+        preferences.putDouble("ctrlHeatSlew", controlHeaterSlewPerSec);
+      }
+      if (!doc["controlFanSlewPerSec"].isNull()) {
+        controlFanSlewPerSec = std::max(0.1, doc["controlFanSlewPerSec"].as<double>());
+        preferences.putDouble("ctrlFanSlew", controlFanSlewPerSec);
+      }
+      bool filterChanged = false;
+      if (!doc["filterTbAlpha"].isNull()) {
+        preprocessingTbAlpha = std::clamp(doc["filterTbAlpha"].as<double>(), 0.0, 1.0);
+        preferences.putDouble("fltTbAlpha", preprocessingTbAlpha);
+        filterChanged = true;
+      }
+      if (!doc["filterTeAlpha"].isNull()) {
+        preprocessingTeAlpha = std::clamp(doc["filterTeAlpha"].as<double>(), 0.0, 1.0);
+        preferences.putDouble("fltTeAlpha", preprocessingTeAlpha);
+        filterChanged = true;
+      }
+      if (!doc["filterDTAlpha"].isNull()) {
+        preprocessingDTAlpha = std::clamp(doc["filterDTAlpha"].as<double>(), 0.0, 1.0);
+        preferences.putDouble("fltDTAlpha", preprocessingDTAlpha);
+        filterChanged = true;
+      }
+      if (!doc["filterRorAlpha"].isNull()) {
+        preprocessingRorAlpha = std::clamp(doc["filterRorAlpha"].as<double>(), 0.0, 1.0);
+        preferences.putDouble("fltRorAlpha", preprocessingRorAlpha);
+        filterChanged = true;
+      }
+      if (filterChanged) {
+        configureControlFramework();
       }
       if (pidAutotuneRelayOutputLow > pidAutotuneRelayOutputHigh) {
         double temp = pidAutotuneRelayOutputLow;
@@ -1007,8 +1389,37 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       setEmergencyStopState(false);
     }
 
+    if (command != NULL && strncmp(command, "startNoBeanIdentification", 25) == 0) {
+      noBeanIdFan = std::clamp(doc["fan"].isNull() ? noBeanIdFan : doc["fan"].as<double>(), controlFanMin, controlFanMax);
+      noBeanIdHeaterLow = std::clamp(doc["heaterLow"].isNull() ? noBeanIdHeaterLow : doc["heaterLow"].as<double>(), 0.0, 100.0);
+      noBeanIdHeaterHigh = std::clamp(doc["heaterHigh"].isNull() ? noBeanIdHeaterHigh : doc["heaterHigh"].as<double>(), 0.0, 100.0);
+      noBeanIdFanHigh =
+          std::clamp(doc["fanHigh"].isNull() ? noBeanIdFanHigh : doc["fanHigh"].as<double>(), controlFanMin, controlFanMax);
+      noBeanIdBaselineMs =
+          std::max<unsigned long>(5000, lround((doc["baselineSec"].isNull() ? 15.0 : doc["baselineSec"].as<double>()) * 1000.0));
+      noBeanIdStepMs =
+          std::max<unsigned long>(10000, lround((doc["stepSec"].isNull() ? 35.0 : doc["stepSec"].as<double>()) * 1000.0));
+      pidEnabled = false;
+      pidAutotuneActive = false;
+      adrcAutotuneActive = false;
+      noBeanEstimator.reset();
+      noBeanIdState = NoBeanIdState::BASELINE;
+      noBeanIdStartMs = millis();
+      noBeanIdPhaseStartMs = noBeanIdStartMs;
+      setFanSpeed(lround(noBeanIdFan));
+      setHeaterPower(lround(noBeanIdHeaterLow));
+      logf("No-bean identification started (fan=%.1f heaterLow=%.1f heaterHigh=%.1f fanHigh=%.1f)\n", noBeanIdFan,
+           noBeanIdHeaterLow, noBeanIdHeaterHigh, noBeanIdFanHigh);
+    }
+
+    if (command != NULL && strncmp(command, "stopNoBeanIdentification", 24) == 0) {
+      noBeanIdState = NoBeanIdState::IDLE;
+      setHeaterPower(0);
+      log("No-bean identification stopped by client");
+    }
+
     if (getHeaterPower() > 0 && getFanSpeed() <= 30) {
-      setFanSpeed(30);
+      setFanSpeed(lround(std::max(30.0, controlFanMin)));
     }
 
     if (command != NULL && strncmp(command, "setPreferences", 14) == 0) {
@@ -1077,6 +1488,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["pidTempSlope"] = pidTempSlope;
       dataObj["pidProcessDelaySec"] = pidProcessDelaySeconds;
       dataObj["pidPredictorEnabled"] = pidPredictorEnabled;
+      dataObj["pidDerivativeFilterAlpha"] = pidDerivativeFilterAlpha;
+      dataObj["pidSmithModelGain"] = pidSmithModelGain;
+      dataObj["pidSmithModelTauSec"] = pidSmithModelTauSeconds;
       dataObj["pidAutotuneCrossings"] = pidAutotuneCrossings;
       dataObj["pidAutotuneTargetCrossings"] = PID_AUTOTUNE_MIN_CROSSINGS;
       dataObj["pidAutotunePeakHigh"] = pidAutotunePeakHigh;
@@ -1106,7 +1520,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["pidDelayHeater"] = pidDelayMeasureHeater;
       dataObj["controlFanMin"] = controlFanMin;
       dataObj["controlFanMax"] = controlFanMax;
+      dataObj["controlHeaterSlewPerSec"] = controlHeaterSlewPerSec;
+      dataObj["controlFanSlewPerSec"] = controlFanSlewPerSec;
       dataObj["adrcFanControlEnabled"] = adrcFanControlEnabled;
+      dataObj["adrcScheduleEnabled"] = adrcScheduleEnabled;
       dataObj["adrcB0"] = adrcB0;
       dataObj["adrcW0"] = adrcW0;
       dataObj["adrcWc"] = adrcWc;
@@ -1121,6 +1538,37 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["adrcAutotuneBaselineTemp"] = adrcAutotuneBaselineTemp;
       dataObj["adrcAutotuneHeaterStep"] = adrcAutotuneHeaterStep;
       dataObj["adrcAutotuneBaselineSamples"] = adrcAutotuneBaselineSamples;
+      dataObj["filteredBT"] = controlSignals.tb;
+      dataObj["filteredET"] = controlSignals.te;
+      dataObj["dT"] = controlSignals.dT;
+      dataObj["RoR"] = controlSignals.ror;
+      dataObj["rawDT"] = controlSignals.rawDT;
+      dataObj["tbSetpoint"] = std::isfinite(controlTbSetpoint) ? controlTbSetpoint : pidSetpoint;
+      dataObj["teSetpoint"] = controlTeSetpoint;
+      dataObj["rorSetpoint"] = controlRorSetpoint;
+      dataObj["controlAlarms"] = activeControlAlarms;
+      dataObj["controlAlarmSummary"] = control::alarmsToString(activeControlAlarms);
+      dataObj["controlHeaterRaw"] = lastControlOutput.rawHeater;
+      dataObj["controlFanRaw"] = lastControlOutput.rawFan;
+      dataObj["controlHeaterSaturated"] = lastControlOutput.heaterSaturated;
+      dataObj["controlFanSaturated"] = lastControlOutput.fanSaturated;
+      dataObj["controlPredictionTb"] = lastControlOutput.predictionTb;
+      dataObj["controlPredictionTe"] = lastControlOutput.predictionTe;
+      dataObj["filterTbAlpha"] = preprocessingTbAlpha;
+      dataObj["filterTeAlpha"] = preprocessingTeAlpha;
+      dataObj["filterDTAlpha"] = preprocessingDTAlpha;
+      dataObj["filterRorAlpha"] = preprocessingRorAlpha;
+      dataObj["noBeanIdentificationState"] = noBeanIdStateToString(noBeanIdState);
+      dataObj["noBeanIdentificationElapsedSec"] =
+          noBeanIdState == NoBeanIdState::IDLE ? 0.0 : (millis() - noBeanIdStartMs) / 1000.0;
+      dataObj["noBeanLagSec"] = noBeanCharacteristics.lagSeconds;
+      dataObj["noBeanTauTbSec"] = noBeanCharacteristics.tauTbSeconds;
+      dataObj["noBeanTauTeSec"] = noBeanCharacteristics.tauTeSeconds;
+      dataObj["noBeanGainTbPerHeater"] = noBeanCharacteristics.gainTbPerHeater;
+      dataObj["noBeanGainTePerHeater"] = noBeanCharacteristics.gainTePerHeater;
+      dataObj["noBeanSuggestedAdrcB0"] = noBeanCharacteristics.suggestedAdrcB0;
+      dataObj["noBeanSuggestedAdrcW0"] = noBeanCharacteristics.suggestedAdrcW0;
+      dataObj["noBeanSuggestedAdrcWc"] = noBeanCharacteristics.suggestedAdrcWc;
       dataObj["pidKpActive"] = getPidGain("pidKp", pidTarget, 1.0);
       dataObj["pidKiActive"] = getPidGain("pidKi", pidTarget, 0.1);
       dataObj["pidKdActive"] = getPidGain("pidKd", pidTarget, 0.01);
@@ -1171,6 +1619,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["pidTempSlope"] = pidTempSlope;
       dataObj["pidProcessDelaySec"] = pidProcessDelaySeconds;
       dataObj["pidPredictorEnabled"] = pidPredictorEnabled;
+      dataObj["pidDerivativeFilterAlpha"] = pidDerivativeFilterAlpha;
+      dataObj["pidSmithModelGain"] = pidSmithModelGain;
+      dataObj["pidSmithModelTauSec"] = pidSmithModelTauSeconds;
       dataObj["pidAutotuneCrossings"] = pidAutotuneCrossings;
       dataObj["pidAutotuneTargetCrossings"] = PID_AUTOTUNE_MIN_CROSSINGS;
       dataObj["pidAutotunePeakHigh"] = pidAutotunePeakHigh;
@@ -1200,7 +1651,10 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["pidDelayHeater"] = pidDelayMeasureHeater;
       dataObj["controlFanMin"] = controlFanMin;
       dataObj["controlFanMax"] = controlFanMax;
+      dataObj["controlHeaterSlewPerSec"] = controlHeaterSlewPerSec;
+      dataObj["controlFanSlewPerSec"] = controlFanSlewPerSec;
       dataObj["adrcFanControlEnabled"] = adrcFanControlEnabled;
+      dataObj["adrcScheduleEnabled"] = adrcScheduleEnabled;
       dataObj["adrcB0"] = adrcB0;
       dataObj["adrcW0"] = adrcW0;
       dataObj["adrcWc"] = adrcWc;
@@ -1215,6 +1669,37 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["adrcAutotuneBaselineTemp"] = adrcAutotuneBaselineTemp;
       dataObj["adrcAutotuneHeaterStep"] = adrcAutotuneHeaterStep;
       dataObj["adrcAutotuneBaselineSamples"] = adrcAutotuneBaselineSamples;
+      dataObj["filteredBT"] = controlSignals.tb;
+      dataObj["filteredET"] = controlSignals.te;
+      dataObj["dT"] = controlSignals.dT;
+      dataObj["RoR"] = controlSignals.ror;
+      dataObj["rawDT"] = controlSignals.rawDT;
+      dataObj["tbSetpoint"] = std::isfinite(controlTbSetpoint) ? controlTbSetpoint : pidSetpoint;
+      dataObj["teSetpoint"] = controlTeSetpoint;
+      dataObj["rorSetpoint"] = controlRorSetpoint;
+      dataObj["controlAlarms"] = activeControlAlarms;
+      dataObj["controlAlarmSummary"] = control::alarmsToString(activeControlAlarms);
+      dataObj["controlHeaterRaw"] = lastControlOutput.rawHeater;
+      dataObj["controlFanRaw"] = lastControlOutput.rawFan;
+      dataObj["controlHeaterSaturated"] = lastControlOutput.heaterSaturated;
+      dataObj["controlFanSaturated"] = lastControlOutput.fanSaturated;
+      dataObj["controlPredictionTb"] = lastControlOutput.predictionTb;
+      dataObj["controlPredictionTe"] = lastControlOutput.predictionTe;
+      dataObj["filterTbAlpha"] = preprocessingTbAlpha;
+      dataObj["filterTeAlpha"] = preprocessingTeAlpha;
+      dataObj["filterDTAlpha"] = preprocessingDTAlpha;
+      dataObj["filterRorAlpha"] = preprocessingRorAlpha;
+      dataObj["noBeanIdentificationState"] = noBeanIdStateToString(noBeanIdState);
+      dataObj["noBeanIdentificationElapsedSec"] =
+          noBeanIdState == NoBeanIdState::IDLE ? 0.0 : (millis() - noBeanIdStartMs) / 1000.0;
+      dataObj["noBeanLagSec"] = noBeanCharacteristics.lagSeconds;
+      dataObj["noBeanTauTbSec"] = noBeanCharacteristics.tauTbSeconds;
+      dataObj["noBeanTauTeSec"] = noBeanCharacteristics.tauTeSeconds;
+      dataObj["noBeanGainTbPerHeater"] = noBeanCharacteristics.gainTbPerHeater;
+      dataObj["noBeanGainTePerHeater"] = noBeanCharacteristics.gainTePerHeater;
+      dataObj["noBeanSuggestedAdrcB0"] = noBeanCharacteristics.suggestedAdrcB0;
+      dataObj["noBeanSuggestedAdrcW0"] = noBeanCharacteristics.suggestedAdrcW0;
+      dataObj["noBeanSuggestedAdrcWc"] = noBeanCharacteristics.suggestedAdrcWc;
       dataObj["pidKpActive"] = getPidGain("pidKp", pidTarget, 1.0);
       dataObj["pidKiActive"] = getPidGain("pidKi", pidTarget, 0.1);
       dataObj["pidKdActive"] = getPidGain("pidKd", pidTarget, 0.01);
@@ -1239,9 +1724,25 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
         sampleObj["BT"] = sample.bt;
         sampleObj["Amb"] = sample.amb;
         sampleObj["simBT"] = sample.simBt;
+        sampleObj["dT"] = sample.dT;
+        sampleObj["RoR"] = sample.ror;
         sampleObj["BurnerVal"] = sample.burnerVal;
         sampleObj["FanVal"] = sample.fanVal;
+        sampleObj["heaterRaw"] = sample.heaterRaw;
+        sampleObj["fanRaw"] = sample.fanRaw;
         sampleObj["setpoint"] = sample.setpoint;
+        sampleObj["tbSetpoint"] = sample.tbSetpoint;
+        sampleObj["teSetpoint"] = sample.teSetpoint;
+        sampleObj["rorSetpoint"] = sample.rorSetpoint;
+        sampleObj["controlMode"] = controlModeToString(static_cast<ControlMode>(sample.mode));
+        sampleObj["alarms"] = sample.alarms;
+        sampleObj["alarmSummary"] = control::alarmsToString(sample.alarms);
+        sampleObj["heaterSaturated"] = sample.heaterSaturated;
+        sampleObj["fanSaturated"] = sample.fanSaturated;
+        sampleObj["estimatedLagSec"] = sample.estimatedLagSec;
+        sampleObj["modelState1"] = sample.modelState1;
+        sampleObj["modelState2"] = sample.modelState2;
+        sampleObj["modelState3"] = sample.modelState3;
         sampleObj["pidEnabled"] = sample.pidEnabled;
       }
     }
@@ -1306,6 +1807,17 @@ void setupMainLoop(AsyncWebSocket *ws) {
   adrcW0 = std::max(0.1, preferences.getDouble("adrcW0", 1.0));
   adrcWc = std::max(0.05, preferences.getDouble("adrcWc", 0.25));
   adrcFanControlEnabled = preferences.getBool("adrcFanCtrl", true);
+  adrcScheduleEnabled = preferences.getBool("adrcSched", true);
+  pidDerivativeFilterAlpha = std::clamp(preferences.getDouble("pidDerivAlpha", 0.30), 0.0, 1.0);
+  pidSmithModelGain = std::max(0.0, preferences.getDouble("pidSmithGain", 0.02));
+  pidSmithModelTauSeconds = std::max(0.1, preferences.getDouble("pidSmithTau", 20.0));
+  controlHeaterSlewPerSec = std::max(0.1, preferences.getDouble("ctrlHeatSlew", 25.0));
+  controlFanSlewPerSec = std::max(0.1, preferences.getDouble("ctrlFanSlew", 12.0));
+  preprocessingTbAlpha = std::clamp(preferences.getDouble("fltTbAlpha", 0.25), 0.0, 1.0);
+  preprocessingTeAlpha = std::clamp(preferences.getDouble("fltTeAlpha", 0.25), 0.0, 1.0);
+  preprocessingDTAlpha = std::clamp(preferences.getDouble("fltDTAlpha", 0.25), 0.0, 1.0);
+  preprocessingRorAlpha = std::clamp(preferences.getDouble("fltRorAlpha", 0.20), 0.0, 1.0);
+  controlTbSetpoint = pidSetpoint;
   pidAutotuneRelayOutputLow = std::clamp(preferences.getDouble("pidAutoMin", 0.0), 0.0, 100.0);
   pidAutotuneRelayOutputHigh = std::clamp(preferences.getDouble("pidAutoMax", 60.0), 0.0, 100.0);
   pidDelayMeasureFan = std::clamp(preferences.getDouble("pidDelayFan", 50.0), 0.0, 100.0);
@@ -1318,7 +1830,10 @@ void setupMainLoop(AsyncWebSocket *ws) {
     pidAutotuneRelayOutputLow = pidAutotuneRelayOutputHigh;
     pidAutotuneRelayOutputHigh = temp;
   }
+  configureControlFramework();
+  initializeScheduledTables();
   resetAdrcState();
+  resetFrameworkControllers();
   ws->onEvent(onWsEvent);
 }
 
@@ -1360,13 +1875,33 @@ void updateRoastHistory() {
       .bt = gotReading ? etbt[1] : NAN,
       .amb = gotReading ? etbt[2] : NAN,
       .simBt = getSimulatedInternalBeanTemp(),
+      .dT = static_cast<float>(controlSignals.dT),
+      .ror = static_cast<float>(controlSignals.ror),
       .burnerVal = getHeaterPower(),
       .fanVal = getFanSpeed(),
-      .setpoint = pidSetpoint,
+      .heaterRaw = static_cast<float>(lastControlOutput.rawHeater),
+      .fanRaw = static_cast<float>(lastControlOutput.rawFan),
+      .setpoint = static_cast<float>(pidSetpoint),
+      .tbSetpoint = static_cast<float>(std::isfinite(controlTbSetpoint) ? controlTbSetpoint : pidSetpoint),
+      .teSetpoint = static_cast<float>(controlTeSetpoint),
+      .rorSetpoint = static_cast<float>(controlRorSetpoint),
+      .modelState1 = static_cast<float>(lastControlOutput.internal1),
+      .modelState2 = static_cast<float>(lastControlOutput.internal2),
+      .modelState3 = static_cast<float>(lastControlOutput.internal3),
+      .estimatedLagSec = static_cast<float>(pidProcessDelaySeconds),
+      .alarms = activeControlAlarms,
+      .heaterSaturated = lastControlOutput.heaterSaturated,
+      .fanSaturated = lastControlOutput.fanSaturated,
+      .mode = static_cast<uint8_t>(controlMode),
       .pidEnabled = pidEnabled,
   };
 
   appendRoastHistorySample(sample);
+  logf("control_log ms=%lu mode=%s uh=%ld uf=%ld Tb=%.2f Te=%.2f dT=%.2f RoR=%.2f spTb=%.2f spTe=%.2f spRoR=%.2f rawUh=%.2f rawUf=%.2f alarms=%s lag=%.2f m1=%.3f m2=%.3f m3=%.3f\n",
+       sample.ms, controlModeToString(controlMode), sample.burnerVal, sample.fanVal, sample.bt, sample.et, sample.dT, sample.ror,
+       sample.tbSetpoint, sample.teSetpoint, sample.rorSetpoint, sample.heaterRaw, sample.fanRaw,
+       control::alarmsToString(sample.alarms).c_str(), sample.estimatedLagSec, sample.modelState1, sample.modelState2,
+       sample.modelState3);
   lastRoastHistorySampleMs = now;
 }
 
@@ -1383,16 +1918,42 @@ void updatePidControl() {
 
   bool pidDelayMeasureRunning =
       pidDelayMeasureState == PidDelayMeasureState::STABILIZING || pidDelayMeasureState == PidDelayMeasureState::HEATING;
-  if (!pidEnabled && !pidAutotuneActive && !adrcAutotuneActive && !pidDelayMeasureRunning) {
-    return;
-  }
 
   float etbt[3];
-  if (!getETBTReadings(etbt)) {
+  const bool gotReading = getETBTReadings(etbt);
+  lastRawSignals = readRawControlSignals(etbt, gotReading);
+  controlSignals = signalPreprocessor.update(lastRawSignals);
+  if (!pidEnabled && !pidAutotuneActive && !adrcAutotuneActive && !pidDelayMeasureRunning &&
+      noBeanIdState == NoBeanIdState::IDLE) {
+    lastSafetyDecision = safetyMonitor.evaluate(lastRawSignals, controlSignals, getHeaterPower(), getFanSpeed(),
+                                                currentFanEnvelope());
+    activeControlAlarms = lastSafetyDecision.alarms;
+    if (lastSafetyDecision.forceHeaterOff) {
+      setHeaterPower(0);
+    }
+    if (lastSafetyDecision.forceFanMinimum) {
+      setFanSpeed(lround(controlFanMin));
+    }
+    if (getHeaterPower() > 0 && getFanSpeed() < controlFanMin) {
+      setFanSpeed(lround(controlFanMin));
+    }
     return;
   }
 
-  double currentTemp = readPidTargetTemp(pidTarget, etbt);
+  if (!gotReading || !controlSignals.valid) {
+    lastSafetyDecision = safetyMonitor.evaluate(lastRawSignals, controlSignals, getHeaterPower(), getFanSpeed(),
+                                               currentFanEnvelope());
+    activeControlAlarms = lastSafetyDecision.alarms;
+    if (lastSafetyDecision.forceHeaterOff) {
+      setHeaterPower(0);
+    }
+    if (lastSafetyDecision.forceFanMinimum) {
+      setFanSpeed(lround(controlFanMin));
+    }
+    return;
+  }
+
+  double currentTemp = readControlTargetTemp(pidTarget, controlSignals);
   if (isnan(currentTemp)) {
     return;
   }
@@ -1404,7 +1965,7 @@ void updatePidControl() {
   pidHasPreviousTemp = true;
 
   if (pidDelayMeasureState == PidDelayMeasureState::STABILIZING) {
-    setFanSpeed(lround(std::clamp(pidDelayMeasureFan, 0.0, 100.0)));
+    setFanSpeed(lround(std::clamp(pidDelayMeasureFan, controlFanMin, 100.0)));
     setHeaterPower(0);
     pidDelayStabilizeTempSum += currentTemp;
     pidDelayStabilizeSampleCount++;
@@ -1426,7 +1987,7 @@ void updatePidControl() {
   }
 
   if (pidDelayMeasureState == PidDelayMeasureState::HEATING) {
-    setFanSpeed(lround(std::clamp(pidDelayMeasureFan, 0.0, 100.0)));
+    setFanSpeed(lround(std::clamp(pidDelayMeasureFan, controlFanMin, 100.0)));
     setHeaterPower(lround(std::clamp(pidDelayMeasureHeater, 0.0, 100.0)));
     if (pidTempSlope > PID_DELAY_RISE_SLOPE_THRESHOLD) {
       pidDelayRiseSampleCount++;
@@ -1447,6 +2008,80 @@ void updatePidControl() {
     pidCurrentTemp = currentTemp;
     pidPredictedTemp = currentTemp;
     return;
+  }
+
+  if (noBeanIdState != NoBeanIdState::IDLE) {
+    const unsigned long phaseElapsed = now - noBeanIdPhaseStartMs;
+    const double elapsedSec = (now - noBeanIdStartMs) / 1000.0;
+    if (noBeanIdState == NoBeanIdState::BASELINE) {
+      setFanSpeed(lround(noBeanIdFan));
+      setHeaterPower(lround(noBeanIdHeaterLow));
+      if (phaseElapsed >= noBeanIdBaselineMs) {
+        noBeanIdState = NoBeanIdState::HEATER_STEP;
+        noBeanIdPhaseStartMs = now;
+        noBeanEstimator.reset();
+        log("No-bean identification heater step started");
+      }
+      pidCurrentTemp = currentTemp;
+      pidPredictedTemp = currentTemp;
+      return;
+    }
+
+    if (noBeanIdState == NoBeanIdState::HEATER_STEP) {
+      setFanSpeed(lround(noBeanIdFan));
+      setHeaterPower(lround(noBeanIdHeaterHigh));
+      noBeanEstimator.observeStep(elapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh,
+                                  noBeanIdFan);
+      if (phaseElapsed >= noBeanIdStepMs) {
+        noBeanIdState = NoBeanIdState::FAN_STEP;
+        noBeanIdPhaseStartMs = now;
+        log("No-bean identification fan step started");
+      }
+      pidCurrentTemp = currentTemp;
+      pidPredictedTemp = currentTemp;
+      return;
+    }
+
+    if (noBeanIdState == NoBeanIdState::FAN_STEP) {
+      setHeaterPower(lround(noBeanIdHeaterHigh));
+      setFanSpeed(lround(noBeanIdFanHigh));
+      noBeanEstimator.observeStep(elapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh,
+                                  noBeanIdFanHigh);
+      if (phaseElapsed >= noBeanIdStepMs) {
+        noBeanCharacteristics = noBeanEstimator.finish();
+        if (std::isfinite(noBeanCharacteristics.lagSeconds)) {
+          pidMeasuredProcessDelaySeconds = noBeanCharacteristics.lagSeconds;
+          pidProcessDelaySeconds = noBeanCharacteristics.lagSeconds;
+          preferences.putDouble(PREF_PID_MEASURED_DELAY_SEC, pidMeasuredProcessDelaySeconds);
+          preferences.putDouble(PREF_PID_DELAY_SEC, pidProcessDelaySeconds);
+        }
+        if (std::isfinite(noBeanCharacteristics.suggestedAdrcB0)) {
+          adrcB0 = noBeanCharacteristics.suggestedAdrcB0;
+          adrcW0 = noBeanCharacteristics.suggestedAdrcW0;
+          adrcWc = noBeanCharacteristics.suggestedAdrcWc;
+          preferences.putDouble("adrcB0", adrcB0);
+          preferences.putDouble("adrcW0", adrcW0);
+          preferences.putDouble("adrcWc", adrcWc);
+          initializeScheduledTables();
+        }
+        noBeanIdState = NoBeanIdState::COMPLETE;
+        setHeaterPower(0);
+        logf("No-bean identification complete (lag=%.2fs tauTb=%.2fs tauTe=%.2fs b0=%.4f w0=%.3f wc=%.3f)\n",
+             noBeanCharacteristics.lagSeconds, noBeanCharacteristics.tauTbSeconds, noBeanCharacteristics.tauTeSeconds,
+             noBeanCharacteristics.suggestedAdrcB0, noBeanCharacteristics.suggestedAdrcW0,
+             noBeanCharacteristics.suggestedAdrcWc);
+      }
+      pidCurrentTemp = currentTemp;
+      pidPredictedTemp = currentTemp;
+      return;
+    }
+
+    if (noBeanIdState == NoBeanIdState::COMPLETE) {
+      setHeaterPower(0);
+      pidCurrentTemp = currentTemp;
+      pidPredictedTemp = currentTemp;
+      return;
+    }
   }
 
   if (adrcAutotuneActive) {
@@ -1564,87 +2199,44 @@ void updatePidControl() {
     return;
   }
 
-  if (controlMode == ControlMode::ADRC) {
-    if (isnan(adrcObserverZ1)) {
-      adrcObserverZ1 = currentTemp;
-      adrcObserverZ2 = 0.0;
-      adrcObserverZ3 = 0.0;
-      adrcLastCommand = getHeaterPower();
-    }
-
-    const double y = currentTemp;
-    const double b0 = std::max(0.001, adrcB0);
-    const double w0 = std::max(0.1, adrcW0);
-    const double wc = std::max(0.05, adrcWc);
-    const double beta1 = 3.0 * w0;
-    const double beta2 = 3.0 * w0 * w0;
-    const double beta3 = w0 * w0 * w0;
-    const double observerError = adrcObserverZ1 - y;
-
-    adrcObserverZ1 += dtSeconds * (adrcObserverZ2 - beta1 * observerError + b0 * adrcLastCommand);
-    adrcObserverZ2 += dtSeconds * (adrcObserverZ3 - beta2 * observerError);
-    adrcObserverZ3 += dtSeconds * (-beta3 * observerError);
-
-    const double controlError = pidSetpoint - adrcObserverZ1;
-    const double virtualControl = wc * controlError;
-    const double rawHeater = (virtualControl - adrcObserverZ2 - adrcObserverZ3) / b0;
-    const double heaterCommand = std::clamp(rawHeater, 0.0, 100.0);
-    adrcLastCommand += PID_OUTPUT_SMOOTHING_ALPHA * (heaterCommand - adrcLastCommand);
-    adrcLastCommand = std::clamp(adrcLastCommand, 0.0, 100.0);
-
-    if (adrcFanControlEnabled) {
-      const double fanSpan = std::max(0.0, controlFanMax - controlFanMin);
-      const double fanCommand =
-          std::clamp(controlFanMin + ((100.0 - adrcLastCommand) / 100.0) * fanSpan, controlFanMin, controlFanMax);
-      setFanSpeed(lround(fanCommand));
-    }
-    setHeaterPower(lround(adrcLastCommand));
-    pidPredictedTemp = adrcObserverZ1;
-    pidCurrentTemp = currentTemp;
-    pidError = controlError;
-    pidDerivative = adrcObserverZ2;
-    pidOutput = rawHeater;
-    pidSmoothedOutput = adrcLastCommand;
-    return;
+  if (controllersNeedReset) {
+    resetFrameworkControllers();
   }
 
-  double controlTemp = currentTemp;
-  if (pidPredictorEnabled && pidProcessDelaySeconds > 0.0) {
-    controlTemp = currentTemp + pidTempSlope * pidProcessDelaySeconds;
+  control::ControlRequest request = buildControlRequest(dtSeconds);
+  if (pidTarget != PidTargetSensor::BT) {
+    request.signals.tb = currentTemp;
   }
-  pidPredictedTemp = controlTemp;
-  double error = pidSetpoint - controlTemp;
-
-  double kp = getPidGain("pidKp", pidTarget, 1.0);
-  double ki = getPidGain("pidKi", pidTarget, 0.1);
-  double kd = getPidGain("pidKd", pidTarget, 0.01);
-
-  double derivative = 0.0;
-  if (pidHasPreviousError) {
-    derivative = (error - pidPreviousError) / dtSeconds;
-  } else {
-    pidHasPreviousError = true;
-  }
-
-  double unsaturated = kp * error + ki * pidIntegral + kd * derivative;
-  double clamped = std::clamp(unsaturated, 0.0, 100.0);
-  bool allowIntegrate = unsaturated == clamped || (unsaturated > 100.0 && error < 0.0) || (unsaturated < 0.0 && error > 0.0);
-  if (allowIntegrate) {
-    pidIntegral += error * dtSeconds;
-    pidIntegral = std::clamp(pidIntegral, -100.0, 100.0);
-    unsaturated = kp * error + ki * pidIntegral + kd * derivative;
-    clamped = std::clamp(unsaturated, 0.0, 100.0);
+  control::ControlOutput output;
+  switch (controlMode) {
+  case ControlMode::ADRC:
+    output = scheduledAdrcController.update(request, activeAdrcParams(), adrcFanControlEnabled);
+    adrcObserverZ1 = output.internal1;
+    adrcObserverZ2 = output.internal2;
+    adrcObserverZ3 = output.internal3;
+    adrcLastCommand = output.heater;
+    break;
+  case ControlMode::FUZZY:
+    output = fuzzyController.update(request, activeFuzzyParams());
+    break;
+  case ControlMode::MPC:
+    output = mpcController.update(request, mpcSchedule.lookup(getFanSpeed(), getHeaterPower()));
+    break;
+  default:
+    output = pidController.update(request, activePidParams());
+    break;
   }
 
-  pidSmoothedOutput += PID_OUTPUT_SMOOTHING_ALPHA * (clamped - pidSmoothedOutput);
-  pidSmoothedOutput = std::clamp(pidSmoothedOutput, 0.0, 100.0);
+  lastControlOutput = output;
+  applyControlOutput(output);
 
-  double output = unsaturated;
-  long heaterPower = lround(pidSmoothedOutput);
-  setHeaterPower(heaterPower);
-  pidPreviousError = error;
   pidCurrentTemp = currentTemp;
-  pidError = error;
-  pidDerivative = derivative;
-  pidOutput = output;
+  pidPredictedTemp = output.predictionTb;
+  pidError = output.internal1;
+  pidIntegral = controlMode == ControlMode::PID ? output.internal2 : pidIntegral;
+  pidDerivative = output.internal3;
+  pidOutput = output.rawHeater;
+  pidSmoothedOutput = output.heater;
+  pidPreviousError = pidError;
+  pidHasPreviousError = true;
 }

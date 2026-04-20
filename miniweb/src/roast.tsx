@@ -8,7 +8,7 @@ import { calculateRateOfRise } from "./ror";
 import { sendWsCommand, useSocketState } from "./websocket";
 
 type PidTarget = "BT" | "ET" | "simBT";
-type ControlMode = "pid" | "adrc";
+type ControlMode = "pid" | "adrc" | "fuzzy" | "mpc";
 
 const initialState = new YaegerState();
 
@@ -270,7 +270,12 @@ export function RoastApp() {
         adrcFanControlDirty.current = false;
       }
     }
-    if (lastMessage?.controlMode === "pid" || lastMessage?.controlMode === "adrc") {
+    if (
+      lastMessage?.controlMode === "pid" ||
+      lastMessage?.controlMode === "adrc" ||
+      lastMessage?.controlMode === "fuzzy" ||
+      lastMessage?.controlMode === "mpc"
+    ) {
       if (!controlModeDirty.current) {
         setControlMode(lastMessage.controlMode);
       } else if (lastMessage.controlMode === controlMode) {
@@ -712,6 +717,8 @@ export function RoastApp() {
           >
             <option value="pid">PID</option>
             <option value="adrc">ADRC</option>
+            <option value="fuzzy">Fuzzy</option>
+            <option value="mpc">MPC</option>
           </select>
           <label>Auto fan min</label>
           <input
