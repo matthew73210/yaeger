@@ -4,6 +4,7 @@ import { getAdminSecret } from "./auth";
 import { getFormattedTimeDifference } from "./util";
 import { Measurement, RoastState, RoasterStatus, YaegerState } from "./model";
 import { followProfile, ProfileControl, profileStore, ROAST_EVENT_TAGS } from "./profiling";
+import { calculateRateOfRise } from "./ror";
 import { sendWsCommand, useSocketState } from "./websocket";
 
 type PidTarget = "BT" | "ET" | "simBT";
@@ -121,6 +122,11 @@ export function RoastApp() {
       };
 
       if (prev.roast && prev.currentState.status === RoasterStatus.roasting) {
+        const previousMeasurement = prev.roast.measurements[prev.roast.measurements.length - 1];
+        if (previousMeasurement?.timestamp.getTime() === lastUpdate.getTime()) {
+          return next;
+        }
+
         const measurement: Measurement = {
           timestamp: lastUpdate,
           message: lastMessage,
@@ -295,22 +301,18 @@ export function RoastApp() {
 
   const btRoR = useMemo(() => {
     const m = state.roast?.measurements ?? [];
-    if (m.length < 2) return null;
-    const latest = m[m.length - 1];
-    const prev = m[m.length - 2];
-    if (!Number.isFinite(latest.message.BT) || !Number.isFinite(prev.message.BT)) return null;
-    const elapsed = (latest.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
-    return elapsed > 0 ? ((latest.message.BT - prev.message.BT) / elapsed) * 60 : null;
+    return calculateRateOfRise(
+      m.map((measurement) => measurement.message.BT),
+      m.map((measurement) => measurement.timestamp.getTime() / 1000),
+    );
   }, [state.roast]);
 
   const etRoR = useMemo(() => {
     const m = state.roast?.measurements ?? [];
-    if (m.length < 2) return null;
-    const latest = m[m.length - 1];
-    const prev = m[m.length - 2];
-    if (!Number.isFinite(latest.message.ET) || !Number.isFinite(prev.message.ET)) return null;
-    const elapsed = (latest.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
-    return elapsed > 0 ? ((latest.message.ET - prev.message.ET) / elapsed) * 60 : null;
+    return calculateRateOfRise(
+      m.map((measurement) => measurement.message.ET),
+      m.map((measurement) => measurement.timestamp.getTime() / 1000),
+    );
   }, [state.roast]);
 
   const formatMetric = (value: number | null | undefined, digits = 2) =>
