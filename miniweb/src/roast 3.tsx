@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { RoastGraphs } from "./graphs";
+import { RoastGraphMode, RoastGraphs } from "./graphs";
 import { getAdminSecret } from "./auth";
 import { getFormattedTimeDifference } from "./util";
 import { Measurement, RoastState, RoasterStatus, YaegerState } from "./model";
-import { followProfile, ProfileControl, profileStore, ROAST_EVENT_TAGS } from "./profiling";
-import { calculateRateOfRise } from "./ror";
+import { followProfile, ProfileControl, profileStore } from "./profiling";
 import { sendWsCommand, useSocketState } from "./websocket";
 
 type PidTarget = "BT" | "ET" | "simBT";
@@ -35,9 +34,6 @@ export function RoastApp() {
   const [adrcB0, setAdrcB0] = useState(0.02);
   const [adrcW0, setAdrcW0] = useState(1.0);
   const [adrcWc, setAdrcWc] = useState(0.25);
-  const [controlFanMin, setControlFanMin] = useState(30);
-  const [controlFanMax, setControlFanMax] = useState(80);
-  const [adrcFanControlEnabled, setAdrcFanControlEnabled] = useState(true);
   const [pidEnabled, setPidEnabled] = useState(false);
   const [roastControlActive, setRoastControlActive] = useState(false);
   const [pidTarget, setPidTarget] = useState<PidTarget>("BT");
@@ -46,10 +42,9 @@ export function RoastApp() {
   const hasHydratedPidFromTelemetry = useRef(false);
   const pidSyncPausedUntilMs = useRef(0);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [graphMode, setGraphMode] = useState<RoastGraphMode>("separate");
   const [graphHeightScale, setGraphHeightScale] = useState(1.2);
   const controlModeDirty = useRef(false);
-  const controlFanBoundsDirty = useRef(false);
-  const adrcFanControlDirty = useRef(false);
   const sendCommand = (data: Record<string, unknown>) => {
     const authToken = getAdminSecret();
     sendWsCommand({ ...data, authToken });
@@ -87,9 +82,6 @@ export function RoastApp() {
     pidOn = pidEnabled,
     setpointValue = setpointTarget,
   ) => {
-    const fanBounds = normalizeFanBounds(controlFanMin, controlFanMax);
-    if (fanBounds.min !== controlFanMin) setControlFanMin(fanBounds.min);
-    if (fanBounds.max !== controlFanMax) setControlFanMax(fanBounds.max);
     sendCommand({
       id: 1,
       command: "setPidControl",
@@ -97,9 +89,6 @@ export function RoastApp() {
       pidEnabled: pidOn && status === RoasterStatus.roasting,
       pidTarget,
       controlMode,
-      controlFanMin: fanBounds.min,
-      controlFanMax: fanBounds.max,
-      adrcFanControlEnabled,
       adrcB0,
       adrcW0,
       adrcWc,
@@ -122,11 +111,6 @@ export function RoastApp() {
       };
 
       if (prev.roast && prev.currentState.status === RoasterStatus.roasting) {
-        const previousMeasurement = prev.roast.measurements[prev.roast.measurements.length - 1];
-        if (previousMeasurement?.timestamp.getTime() === lastUpdate.getTime()) {
-          return next;
-        }
-
         const measurement: Measurement = {
           timestamp: lastUpdate,
           message: lastMessage,
@@ -177,7 +161,7 @@ export function RoastApp() {
     const startDate = new Date(nowMs - latestMs);
 
     const measurements: Measurement[] = samples
-      .map((entry): Measurement | null => {
+      .map((entry) => {
         const sample = entry as Record<string, unknown>;
         const sampleMs = Number(sample.ms ?? 0);
         if (!Number.isFinite(sampleMs)) return null;
@@ -201,7 +185,7 @@ export function RoastApp() {
               kd,
             },
           },
-        };
+        } satisfies Measurement;
       })
       .filter((m): m is Measurement => m != null);
 
@@ -251,25 +235,6 @@ export function RoastApp() {
     if (typeof lastMessage?.adrcB0 === "number") setAdrcB0(lastMessage.adrcB0);
     if (typeof lastMessage?.adrcW0 === "number") setAdrcW0(lastMessage.adrcW0);
     if (typeof lastMessage?.adrcWc === "number") setAdrcWc(lastMessage.adrcWc);
-    if (typeof lastMessage?.controlFanMin === "number" && typeof lastMessage?.controlFanMax === "number") {
-      if (!controlFanBoundsDirty.current) {
-        setControlFanMin(lastMessage.controlFanMin);
-        setControlFanMax(lastMessage.controlFanMax);
-      } else {
-        const minMatches = Math.abs(lastMessage.controlFanMin - controlFanMin) < 0.01;
-        const maxMatches = Math.abs(lastMessage.controlFanMax - controlFanMax) < 0.01;
-        if (minMatches && maxMatches) {
-          controlFanBoundsDirty.current = false;
-        }
-      }
-    }
-    if (typeof lastMessage?.adrcFanControlEnabled === "boolean") {
-      if (!adrcFanControlDirty.current) {
-        setAdrcFanControlEnabled(lastMessage.adrcFanControlEnabled);
-      } else if (lastMessage.adrcFanControlEnabled === adrcFanControlEnabled) {
-        adrcFanControlDirty.current = false;
-      }
-    }
     if (lastMessage?.controlMode === "pid" || lastMessage?.controlMode === "adrc") {
       if (!controlModeDirty.current) {
         setControlMode(lastMessage.controlMode);
@@ -277,7 +242,7 @@ export function RoastApp() {
         controlModeDirty.current = false;
       }
     }
-  }, [adrcFanControlEnabled, controlFanMax, controlFanMin, controlMode, isEditingPid, lastMessage]);
+  }, [controlMode, isEditingPid, lastMessage]);
 
   useEffect(() => {
     const onPidUpdated = (event: Event) => {
@@ -301,27 +266,26 @@ export function RoastApp() {
 
   const btRoR = useMemo(() => {
     const m = state.roast?.measurements ?? [];
-    return calculateRateOfRise(
-      m.map((measurement) => measurement.message.BT),
-      m.map((measurement) => measurement.timestamp.getTime() / 1000),
-    );
+    if (m.length < 2) return null;
+    const latest = m[m.length - 1];
+    const prev = m[m.length - 2];
+    if (!Number.isFinite(latest.message.BT) || !Number.isFinite(prev.message.BT)) return null;
+    const elapsed = (latest.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
+    return elapsed > 0 ? ((latest.message.BT - prev.message.BT) / elapsed) * 60 : null;
   }, [state.roast]);
 
   const etRoR = useMemo(() => {
     const m = state.roast?.measurements ?? [];
-    return calculateRateOfRise(
-      m.map((measurement) => measurement.message.ET),
-      m.map((measurement) => measurement.timestamp.getTime() / 1000),
-    );
+    if (m.length < 2) return null;
+    const latest = m[m.length - 1];
+    const prev = m[m.length - 2];
+    if (!Number.isFinite(latest.message.ET) || !Number.isFinite(prev.message.ET)) return null;
+    const elapsed = (latest.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
+    return elapsed > 0 ? ((latest.message.ET - prev.message.ET) / elapsed) * 60 : null;
   }, [state.roast]);
 
   const formatMetric = (value: number | null | undefined, digits = 2) =>
     typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "N/A";
-  const effectiveControlMode = lastMessage?.controlMode ?? controlMode;
-  const controllerCommand =
-    effectiveControlMode === "adrc"
-      ? lastMessage?.adrcLastCommand ?? lastMessage?.pidOutputSmoothed
-      : lastMessage?.pidOutputSmoothed;
 
   const forceStopRoastControl = (status = state.currentState.status) => {
     setRoastControlActive(false);
@@ -410,26 +374,11 @@ export function RoastApp() {
     });
   };
 
-  const onProfileStateChange = () => {
-    setRefreshToken((v) => v + 1);
-    setState((prev) =>
-      prev.roast
-        ? {
-            ...prev,
-            roast: {
-              ...prev.roast,
-              profile: profileStore.profile,
-            },
-          }
-        : prev,
-    );
-  };
-
   return (
     <div class="roast-dashboard">
       <div class="roast-toolbar">
         <button onClick={toggleRoastRecording}>
-          {state.currentState.status === RoasterStatus.idle ? "Start logging" : "Stop logging"}
+          {state.currentState.status === RoasterStatus.idle ? "Start graph" : "Stop graph"}
         </button>
         <button
           onClick={() => {
@@ -487,6 +436,13 @@ export function RoastApp() {
           disabled={state.currentState.status === RoasterStatus.roasting}
         />
         <span class="roast-time-pill">Roast time: {roastTime}</span>
+        <label class="graph-mode-control">
+          Graph layout
+          <select value={graphMode} onChange={(e) => setGraphMode((e.target as HTMLSelectElement).value as RoastGraphMode)}>
+            <option value="combined">Single combined graph</option>
+            <option value="separate">Three separate graphs</option>
+          </select>
+        </label>
         <label class="graph-height-control">
           Graph height
           <input
@@ -529,50 +485,25 @@ export function RoastApp() {
           </div>
         </div>
 
-        <div class="controller-summary">
-          <h3>Controller</h3>
+        <div class="pid-summary">
+          <h3>PID current values</h3>
           <div class="pid-grid">
-            <span>Mode {effectiveControlMode.toUpperCase()}</span>
-            <span>Target {lastMessage?.pidTarget ?? pidTarget}</span>
-            <span>Temp {formatMetric(lastMessage?.pidCurrentTemp, 2)} °C</span>
-            <span>Error {formatMetric(lastMessage?.pidError, 2)} °C</span>
-            <span>Setpoint {formatMetric(lastMessage?.setpoint ?? setpointTarget, 1)} °C</span>
-            <span>Command {formatMetric(controllerCommand, 2)}%</span>
-            <span>Fan range {formatMetric(lastMessage?.controlFanMin ?? controlFanMin, 0)}-{formatMetric(lastMessage?.controlFanMax ?? controlFanMax, 0)}%</span>
-            <span>ADRC fan {(lastMessage?.adrcFanControlEnabled ?? adrcFanControlEnabled) ? "On" : "Manual"}</span>
+            <span>Temp {formatMetric(lastMessage?.pidCurrentTemp, 2)}</span>
+            <span>Pred Temp {formatMetric(lastMessage?.pidPredictedTemp, 2)}</span>
+            <span>Error {formatMetric(lastMessage?.pidError, 2)}</span>
+            <span>Integral {formatMetric(lastMessage?.pidIntegral, 2)}</span>
+            <span>Derivative {formatMetric(lastMessage?.pidDerivative, 2)}</span>
+            <span>Output {formatMetric(lastMessage?.pidOutput, 2)}</span>
+            <span>Smoothed {formatMetric(lastMessage?.pidOutputSmoothed, 2)}</span>
+            <span>Delay {formatMetric(lastMessage?.pidProcessDelaySec, 2)}s</span>
+            <span>Predictor {lastMessage?.pidPredictorEnabled ? "On" : "Off"}</span>
           </div>
-          <details class="controller-diagnostics roast-controller-diagnostics">
-            <summary>Debug values</summary>
-            <div class="pid-grid">
-              {effectiveControlMode === "adrc" ? (
-                <>
-                  <span>Observer z1 {formatMetric(lastMessage?.adrcZ1 ?? lastMessage?.pidPredictedTemp, 2)} °C</span>
-                  <span>Slope z2 {formatMetric(lastMessage?.adrcZ2, 4)} °C/s</span>
-                  <span>Disturbance z3 {formatMetric(lastMessage?.adrcZ3, 4)}</span>
-                  <span>Raw heater {formatMetric(lastMessage?.pidOutput, 2)}%</span>
-                  <span>Command {formatMetric(lastMessage?.adrcLastCommand ?? lastMessage?.pidOutputSmoothed, 2)}%</span>
-                  <span>b0 {formatMetric(lastMessage?.adrcB0 ?? adrcB0, 4)}</span>
-                  <span>w0 {formatMetric(lastMessage?.adrcW0 ?? adrcW0, 4)}</span>
-                  <span>wc {formatMetric(lastMessage?.adrcWc ?? adrcWc, 4)}</span>
-                </>
-              ) : (
-                <>
-                  <span>Pred Temp {formatMetric(lastMessage?.pidPredictedTemp, 2)} °C</span>
-                  <span>Integral {formatMetric(lastMessage?.pidIntegral, 2)}</span>
-                  <span>Derivative {formatMetric(lastMessage?.pidDerivative, 2)}</span>
-                  <span>Output {formatMetric(lastMessage?.pidOutput, 2)}%</span>
-                  <span>Smoothed {formatMetric(lastMessage?.pidOutputSmoothed, 2)}%</span>
-                  <span>Delay {formatMetric(lastMessage?.pidProcessDelaySec, 2)}s</span>
-                  <span>Predictor {lastMessage?.pidPredictorEnabled ? "On" : "Off"}</span>
-                </>
-              )}
-            </div>
-          </details>
         </div>
       </section>
 
       <RoastGraphs
         roast={state.roast}
+        mode={graphMode}
         heightScale={graphHeightScale}
         profile={profileStore.profile}
       />
@@ -648,11 +579,19 @@ export function RoastApp() {
       <section class="section">
         <h3>Roast events</h3>
         <div class="event-buttons">
-          {ROAST_EVENT_TAGS.map((tag) => (
-            <button key={tag.key} onClick={() => appendEvent(tag.key)}>
-              {tag.label}
-            </button>
-          ))}
+        {[
+          ["charge", "Charge"],
+          ["dry-end", "Dry End"],
+          ["first-crack-start", "First crack start"],
+          ["first-crack-end", "First crack end"],
+          ["second-crack-start", "Second crack start"],
+          ["second-crack-end", "Second crack end"],
+          ["drop", "Drop"],
+        ].map(([key, text]) => (
+          <button key={key} onClick={() => appendEvent(key)}>
+            {text}
+          </button>
+        ))}
         </div>
       </section>
 
@@ -713,40 +652,10 @@ export function RoastApp() {
             <option value="pid">PID</option>
             <option value="adrc">ADRC</option>
           </select>
-          <label>Auto fan min</label>
-          <input
-            type="number"
-            value={controlFanMin}
-            onInput={(e) => {
-              controlFanBoundsDirty.current = true;
-              setControlFanMin(Number((e.target as HTMLInputElement).value) || 0);
-            }}
-          />
-          <label>Auto fan max</label>
-          <input
-            type="number"
-            value={controlFanMax}
-            onInput={(e) => {
-              controlFanBoundsDirty.current = true;
-              setControlFanMax(Number((e.target as HTMLInputElement).value) || 0);
-            }}
-          />
-          <label>ADRC controls fan</label>
-          <input
-            type="checkbox"
-            checked={adrcFanControlEnabled}
-            onChange={(e) => {
-              adrcFanControlDirty.current = true;
-              setAdrcFanControlEnabled(e.currentTarget.checked);
-            }}
-          />
         </div>
         <div class="inline-actions">
           <button
             onClick={() => {
-              const fanBounds = normalizeFanBounds(controlFanMin, controlFanMax);
-              setControlFanMin(fanBounds.min);
-              setControlFanMax(fanBounds.max);
               pidSyncPausedUntilMs.current = Date.now() + 3000;
               sendCommand({
                 id: 1,
@@ -756,18 +665,7 @@ export function RoastApp() {
                 pidKi: ki,
                 pidKd: kd,
               });
-              sendCommand({
-                id: 1,
-                command: "setPidControl",
-                controlMode,
-                pidTarget,
-                controlFanMin: fanBounds.min,
-                controlFanMax: fanBounds.max,
-                adrcFanControlEnabled,
-                adrcB0,
-                adrcW0,
-                adrcWc,
-              });
+              sendCommand({ id: 1, command: "setPidControl", controlMode, pidTarget, adrcB0, adrcW0, adrcWc });
               window.dispatchEvent(
                 new CustomEvent("pid-preferences-updated", {
                   detail: { kp, ki, kd, pidTarget },
@@ -793,22 +691,9 @@ export function RoastApp() {
 
       <div class="section">
         <h3>Profile Selection</h3>
-        <ProfileControl onStateChange={onProfileStateChange} />
+        <ProfileControl onStateChange={() => setRefreshToken((v) => v + 1)} />
       </div>
       <div style="display:none">{refreshToken}</div>
     </div>
   );
-}
-
-function normalizeFanBounds(min: number, max: number) {
-  const safeMin = clampPercent(min);
-  const safeMax = clampPercent(max);
-  return {
-    min: Math.min(safeMin, safeMax),
-    max: Math.max(safeMin, safeMax),
-  };
-}
-
-function clampPercent(value: number) {
-  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
 }
