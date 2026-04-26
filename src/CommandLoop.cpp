@@ -86,6 +86,12 @@ double mpcMoveHeaterWeight = 0.35;
 double mpcMoveFanWeight = 1.20;
 double mpcRorWeight = 0.10;
 uint8_t mpcHorizon = 8;
+double mpcSeedATb = 0.985;
+double mpcSeedATe = 0.970;
+double mpcSeedBTbHeater = 0.025;
+double mpcSeedBTbFan = -0.010;
+double mpcSeedBTeHeater = 0.060;
+double mpcSeedBTeFan = -0.035;
 
 double pidSetpoint = 20.0;
 bool pidEnabled = true;
@@ -153,6 +159,7 @@ double noBeanIdFanHigh = 70.0;
 unsigned long noBeanIdBaselineMs = 15000;
 unsigned long noBeanIdStepMs = 35000;
 control::NoBeanCharacteristics noBeanCharacteristics;
+control::NoBeanCharacteristics noBeanHeaterCharacteristics;
 
 enum class PidDelayMeasureState { IDLE, STABILIZING, HEATING, COMPLETE, FAILED };
 PidDelayMeasureState pidDelayMeasureState = PidDelayMeasureState::IDLE;
@@ -572,15 +579,72 @@ void initializeScheduledTables() {
       adrcSchedule.set(fi, hi, adrc);
 
       control::MpcModel model;
-      model.aTb = std::clamp(0.986 - (fan - 55.0) * 0.00015, 0.94, 0.995);
-      model.aTe = std::clamp(0.972 - (fan - 55.0) * 0.00025, 0.90, 0.990);
-      model.bTbHeater = std::max(0.005, 0.025 + (heater - 55.0) * 0.00008 - (fan - 55.0) * 0.00005);
-      model.bTeHeater = std::max(0.010, 0.060 + (heater - 55.0) * 0.00012);
-      model.bTbFan = -std::max(0.002, 0.010 + (heater - 55.0) * 0.00004);
-      model.bTeFan = -std::max(0.006, 0.035 + (heater - 55.0) * 0.00008);
+      model.aTb = std::clamp(mpcSeedATb - (fan - 55.0) * 0.00015, 0.94, 0.995);
+      model.aTe = std::clamp(mpcSeedATe - (fan - 55.0) * 0.00025, 0.90, 0.990);
+      model.bTbHeater = mpcSeedBTbHeater + (heater - 55.0) * 0.00008 - (fan - 55.0) * 0.00005;
+      model.bTeHeater = mpcSeedBTeHeater + (heater - 55.0) * 0.00012;
+      model.bTbFan = mpcSeedBTbFan - (heater - 55.0) * 0.00004;
+      model.bTeFan = mpcSeedBTeFan - (heater - 55.0) * 0.00008;
       mpcSchedule.set(fi, hi, model);
     }
   }
+}
+
+void persistFuzzyAndMpcSeeds() {
+  preferences.putDouble("fuzzyETScale", fuzzyETScale);
+  preferences.putDouble("fuzzyERorScale", fuzzyERorScale);
+  preferences.putDouble("fuzzyDTLow", fuzzyDTLow);
+  preferences.putDouble("fuzzyDTHigh", fuzzyDTHigh);
+  preferences.putDouble("fuzzyHeatStep", fuzzyHeaterStepScale);
+  preferences.putDouble("fuzzyFanStep", fuzzyFanStepScale);
+  preferences.putDouble("mpcATb", mpcSeedATb);
+  preferences.putDouble("mpcATe", mpcSeedATe);
+  preferences.putDouble("mpcBTbH", mpcSeedBTbHeater);
+  preferences.putDouble("mpcBTbF", mpcSeedBTbFan);
+  preferences.putDouble("mpcBTeH", mpcSeedBTeHeater);
+  preferences.putDouble("mpcBTeF", mpcSeedBTeFan);
+}
+
+void applyNoBeanCharacteristicsToControlSeeds() {
+  const double dtSeconds = PID_UPDATE_INTERVAL_MS / 1000.0;
+  const double tauTb = std::isfinite(noBeanCharacteristics.tauTbSeconds)
+                           ? std::max(dtSeconds, noBeanCharacteristics.tauTbSeconds)
+                           : 25.0;
+  const double tauTe = std::isfinite(noBeanCharacteristics.tauTeSeconds)
+                           ? std::max(dtSeconds, noBeanCharacteristics.tauTeSeconds)
+                           : std::max(dtSeconds, tauTb * 0.6);
+  mpcSeedATb = std::clamp(exp(-dtSeconds / tauTb), 0.94, 0.995);
+  mpcSeedATe = std::clamp(exp(-dtSeconds / tauTe), 0.90, 0.990);
+
+  if (std::isfinite(noBeanCharacteristics.gainTbPerHeater)) {
+    mpcSeedBTbHeater = noBeanCharacteristics.gainTbPerHeater * (1.0 - mpcSeedATb);
+  }
+  if (std::isfinite(noBeanCharacteristics.gainTePerHeater)) {
+    mpcSeedBTeHeater = noBeanCharacteristics.gainTePerHeater * (1.0 - mpcSeedATe);
+  }
+  if (std::isfinite(noBeanCharacteristics.gainTbPerFan)) {
+    mpcSeedBTbFan = noBeanCharacteristics.gainTbPerFan * (1.0 - mpcSeedATb);
+  }
+  if (std::isfinite(noBeanCharacteristics.gainTePerFan)) {
+    mpcSeedBTeFan = noBeanCharacteristics.gainTePerFan * (1.0 - mpcSeedATe);
+  }
+
+  const double heaterSpan = std::max(1.0, fabs(noBeanIdHeaterHigh - noBeanIdHeaterLow));
+  const double tbMove = std::isfinite(noBeanCharacteristics.gainTbPerHeater)
+                            ? fabs(noBeanCharacteristics.gainTbPerHeater * heaterSpan)
+                            : 20.0;
+  fuzzyETScale = std::clamp(tbMove * 0.5, 5.0, 60.0);
+  const double rorMove = tauTb > 0.0 ? tbMove / tauTb * 60.0 : 20.0;
+  fuzzyERorScale = std::clamp(rorMove, 5.0, 60.0);
+  const double dTSpan = std::isfinite(noBeanCharacteristics.dTGain) ? std::max(8.0, fabs(noBeanCharacteristics.dTGain)) : 20.0;
+  const double dTCenter = std::isfinite(controlSignals.dT) ? controlSignals.dT : (fuzzyDTLow + fuzzyDTHigh) * 0.5;
+  fuzzyDTLow = dTCenter - dTSpan * 0.5;
+  fuzzyDTHigh = dTCenter + dTSpan * 0.5;
+  fuzzyHeaterStepScale = std::clamp(tbMove * 0.25, 3.0, 15.0);
+  fuzzyFanStepScale = std::clamp(dTSpan * 0.15, 2.0, 10.0);
+
+  initializeScheduledTables();
+  persistFuzzyAndMpcSeeds();
 }
 
 void resetFrameworkControllers() {
@@ -1521,6 +1585,7 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       pidAutotuneActive = false;
       adrcAutotuneActive = false;
       noBeanEstimator.reset();
+      noBeanHeaterCharacteristics = control::NoBeanCharacteristics();
       noBeanIdState = NoBeanIdState::BASELINE;
       noBeanIdStartMs = millis();
       noBeanIdPhaseStartMs = noBeanIdStartMs;
@@ -1696,6 +1761,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["noBeanTauTeSec"] = noBeanCharacteristics.tauTeSeconds;
       dataObj["noBeanGainTbPerHeater"] = noBeanCharacteristics.gainTbPerHeater;
       dataObj["noBeanGainTePerHeater"] = noBeanCharacteristics.gainTePerHeater;
+      dataObj["noBeanGainTbPerFan"] = noBeanCharacteristics.gainTbPerFan;
+      dataObj["noBeanGainTePerFan"] = noBeanCharacteristics.gainTePerFan;
+      dataObj["noBeanDTGain"] = noBeanCharacteristics.dTGain;
       dataObj["noBeanSuggestedAdrcB0"] = noBeanCharacteristics.suggestedAdrcB0;
       dataObj["noBeanSuggestedAdrcW0"] = noBeanCharacteristics.suggestedAdrcW0;
       dataObj["noBeanSuggestedAdrcWc"] = noBeanCharacteristics.suggestedAdrcWc;
@@ -1839,6 +1907,9 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["noBeanTauTeSec"] = noBeanCharacteristics.tauTeSeconds;
       dataObj["noBeanGainTbPerHeater"] = noBeanCharacteristics.gainTbPerHeater;
       dataObj["noBeanGainTePerHeater"] = noBeanCharacteristics.gainTePerHeater;
+      dataObj["noBeanGainTbPerFan"] = noBeanCharacteristics.gainTbPerFan;
+      dataObj["noBeanGainTePerFan"] = noBeanCharacteristics.gainTePerFan;
+      dataObj["noBeanDTGain"] = noBeanCharacteristics.dTGain;
       dataObj["noBeanSuggestedAdrcB0"] = noBeanCharacteristics.suggestedAdrcB0;
       dataObj["noBeanSuggestedAdrcW0"] = noBeanCharacteristics.suggestedAdrcW0;
       dataObj["noBeanSuggestedAdrcWc"] = noBeanCharacteristics.suggestedAdrcWc;
@@ -1976,6 +2047,12 @@ void setupMainLoop(AsyncWebSocket *ws) {
   mpcMoveFanWeight = std::max(0.0, preferences.getDouble("mpcMoveFan", 1.20));
   mpcRorWeight = std::max(0.0, preferences.getDouble("mpcRorWeight", 0.10));
   mpcHorizon = static_cast<uint8_t>(std::clamp<long>(preferences.getLong("mpcHorizon", 8), 1, 20));
+  mpcSeedATb = std::clamp(preferences.getDouble("mpcATb", 0.985), 0.94, 0.995);
+  mpcSeedATe = std::clamp(preferences.getDouble("mpcATe", 0.970), 0.90, 0.990);
+  mpcSeedBTbHeater = preferences.getDouble("mpcBTbH", 0.025);
+  mpcSeedBTbFan = preferences.getDouble("mpcBTbF", -0.010);
+  mpcSeedBTeHeater = preferences.getDouble("mpcBTeH", 0.060);
+  mpcSeedBTeFan = preferences.getDouble("mpcBTeF", -0.035);
   controlTbSetpoint = pidSetpoint;
   pidAutotuneRelayOutputLow = std::clamp(preferences.getDouble("pidAutoMin", 0.0), 0.0, 100.0);
   pidAutotuneRelayOutputHigh = std::clamp(preferences.getDouble("pidAutoMax", 60.0), 0.0, 100.0);
@@ -2171,7 +2248,7 @@ void updatePidControl() {
 
   if (noBeanIdState != NoBeanIdState::IDLE) {
     const unsigned long phaseElapsed = now - noBeanIdPhaseStartMs;
-    const double elapsedSec = (now - noBeanIdStartMs) / 1000.0;
+    const double phaseElapsedSec = phaseElapsed / 1000.0;
     if (noBeanIdState == NoBeanIdState::BASELINE) {
       setFanSpeed(lround(noBeanIdFan));
       setHeaterPower(lround(noBeanIdHeaterLow));
@@ -2189,9 +2266,11 @@ void updatePidControl() {
     if (noBeanIdState == NoBeanIdState::HEATER_STEP) {
       setFanSpeed(lround(noBeanIdFan));
       setHeaterPower(lround(noBeanIdHeaterHigh));
-      noBeanEstimator.observeStep(elapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh,
+      noBeanEstimator.observeStep(phaseElapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh - noBeanIdHeaterLow,
                                   noBeanIdFan);
       if (phaseElapsed >= noBeanIdStepMs) {
+        noBeanHeaterCharacteristics = noBeanEstimator.finish();
+        noBeanEstimator.reset();
         noBeanIdState = NoBeanIdState::FAN_STEP;
         noBeanIdPhaseStartMs = now;
         log("No-bean identification fan step started");
@@ -2204,10 +2283,13 @@ void updatePidControl() {
     if (noBeanIdState == NoBeanIdState::FAN_STEP) {
       setHeaterPower(lround(noBeanIdHeaterHigh));
       setFanSpeed(lround(noBeanIdFanHigh));
-      noBeanEstimator.observeStep(elapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh,
-                                  noBeanIdFanHigh);
+      noBeanEstimator.observeStep(phaseElapsedSec, controlSignals.tb, controlSignals.te, controlSignals.dT, noBeanIdHeaterHigh,
+                                  noBeanIdFanHigh - noBeanIdFan);
       if (phaseElapsed >= noBeanIdStepMs) {
-        noBeanCharacteristics = noBeanEstimator.finish();
+        control::NoBeanCharacteristics fanCharacteristics = noBeanEstimator.finish();
+        noBeanCharacteristics = noBeanHeaterCharacteristics;
+        noBeanCharacteristics.gainTbPerFan = fanCharacteristics.gainTbPerFan;
+        noBeanCharacteristics.gainTePerFan = fanCharacteristics.gainTePerFan;
         if (std::isfinite(noBeanCharacteristics.lagSeconds)) {
           pidMeasuredProcessDelaySeconds = noBeanCharacteristics.lagSeconds;
           pidProcessDelaySeconds = noBeanCharacteristics.lagSeconds;
@@ -2221,8 +2303,8 @@ void updatePidControl() {
           preferences.putDouble("adrcB0", adrcB0);
           preferences.putDouble("adrcW0", adrcW0);
           preferences.putDouble("adrcWc", adrcWc);
-          initializeScheduledTables();
         }
+        applyNoBeanCharacteristicsToControlSeeds();
         noBeanIdState = NoBeanIdState::COMPLETE;
         setHeaterPower(0);
         logf("No-bean identification complete (lag=%.2fs tauTb=%.2fs tauTe=%.2fs b0=%.4f w0=%.3f wc=%.3f)\n",

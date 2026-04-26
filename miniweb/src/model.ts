@@ -114,6 +114,9 @@ export type YaegerMessage = {
   noBeanTauTeSec?: number;
   noBeanGainTbPerHeater?: number;
   noBeanGainTePerHeater?: number;
+  noBeanGainTbPerFan?: number;
+  noBeanGainTePerFan?: number;
+  noBeanDTGain?: number;
   noBeanSuggestedAdrcB0?: number;
   noBeanSuggestedAdrcW0?: number;
   noBeanSuggestedAdrcWc?: number;

@@ -6,14 +6,15 @@ import { sendWsCommand, useSocketState } from "./websocket";
 type PidTarget = "BT" | "ET" | "simBT";
 type PidMethod = "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot";
 type ControlMode = "pid" | "adrc" | "fuzzy" | "mpc";
-type AutotuneMode = "pid" | "adrc";
+type LegacyTuneMode = "pid" | "adrc";
 
 export function AutotuneApp() {
   const { lastMessage } = useSocketState();
   const [target, setTarget] = useState<PidTarget>("BT");
   const [method, setMethod] = useState<PidMethod>("ziegler-nichols");
   const [controlMode, setControlMode] = useState<ControlMode>("pid");
-  const [autotuneMode, setAutotuneMode] = useState<AutotuneMode>("pid");
+  const [legacyTuneMode, setLegacyTuneMode] = useState<LegacyTuneMode>("pid");
+  const [useBeanLoadedTune, setUseBeanLoadedTune] = useState(false);
   const [setpoint, setSetpoint] = useState(20);
   const [fanSpeed, setFanSpeed] = useState(50);
   const [minHeaterPwm, setMinHeaterPwm] = useState(0);
@@ -76,7 +77,7 @@ export function AutotuneApp() {
   const fuzzyValuesDirty = useRef(false);
   const mpcValuesDirty = useRef(false);
   const controlModeDirty = useRef(false);
-  const autotuneModeDirty = useRef(false);
+  const legacyTuneModeDirty = useRef(false);
 
   const sendCommand = (data: Record<string, unknown>) => {
     const authToken = getAdminSecret();
@@ -103,10 +104,10 @@ export function AutotuneApp() {
       }
     }
     if (lastMessage.autotuneMode === "pid" || lastMessage.autotuneMode === "adrc") {
-      if (!autotuneModeDirty.current) {
-        setAutotuneMode(lastMessage.autotuneMode);
-      } else if (lastMessage.autotuneMode === autotuneMode) {
-        autotuneModeDirty.current = false;
+      if (!legacyTuneModeDirty.current) {
+        setLegacyTuneMode(lastMessage.autotuneMode);
+      } else if (lastMessage.autotuneMode === legacyTuneMode) {
+        legacyTuneModeDirty.current = false;
       }
     }
 
@@ -270,7 +271,7 @@ export function AutotuneApp() {
     adrcScheduleEnabled,
     adrcW0,
     adrcWc,
-    autotuneMode,
+    legacyTuneMode,
     controlFanMax,
     controlFanMin,
     controlMode,
@@ -287,63 +288,32 @@ export function AutotuneApp() {
     typeof lastMessage?.pidDelayMeasureElapsedSec === "number" ? lastMessage.pidDelayMeasureElapsedSec.toFixed(1) : "0.0";
   const measuredDelaySec =
     typeof lastMessage?.pidMeasuredProcessDelaySec === "number" ? lastMessage.pidMeasuredProcessDelaySec : processDelaySec;
-  const isAutotuneRunning = Boolean(lastMessage?.pidAutotune || lastMessage?.adrcAutotune);
-  const autotuneProgress =
-    autotuneMode === "adrc"
+  const noBeanState = lastMessage?.noBeanIdentificationState ?? "idle";
+  const noBeanRunning = noBeanState === "baseline" || noBeanState === "heater_step" || noBeanState === "fan_step";
+  const legacyTuneRunning = Boolean(lastMessage?.pidAutotune || lastMessage?.adrcAutotune);
+  const isTuneRunning = noBeanRunning || legacyTuneRunning;
+  const tuneProgress = useBeanLoadedTune
+    ? legacyTuneMode === "adrc"
       ? `ADRC ${lastMessage?.adrcAutotunePhase ?? "idle"} • ${formatValue(lastMessage?.adrcAutotuneElapsedSec, 1)}s`
-      : `Crossings ${lastMessage?.pidAutotuneCrossings ?? 0}/${lastMessage?.pidAutotuneTargetCrossings ?? "?"}`;
+      : `Crossings ${lastMessage?.pidAutotuneCrossings ?? 0}/${lastMessage?.pidAutotuneTargetCrossings ?? "?"}`
+    : `${noBeanState} • ${formatValue(lastMessage?.noBeanIdentificationElapsedSec, 1)}s`;
 
   return (
     <div class="section">
-      <h2>Controller Autotune</h2>
+      <h2>Controller Tuning</h2>
       <div class="status-strip">
-        Mode {autotuneMode.toUpperCase()} • Autotune: {isAutotuneRunning ? "Running" : "Idle"} • {autotuneProgress}
+        Controller {controlMode.toUpperCase()} • Tuning: {isTuneRunning ? "Running" : "Idle"} • {tuneProgress}
       </div>
       <AutotuneGraph history={history} target={target} setpoint={setpoint} />
       <div class="autotune-memos">
         <article class="memo-card">
-          <h3>PID memo</h3>
-          <p>
-            Relay autotune toggles the heater between Min PWM and Max PWM around the setpoint. After repeated crossings it estimates
-            Ku and Pu, then writes Kp, Ki, and Kd using the selected method.
-          </p>
-          <p>The result appears in Kp, Ki, and Kd below and is saved for the selected target sensor.</p>
-        </article>
-        <article class="memo-card">
-          <h3>ADRC memo</h3>
-          <p>
-            Step autotune holds heat off for 10 seconds, applies a 60% heater step for 25 seconds, then estimates b0 from the fastest
-            positive temperature slope.
-          </p>
-          <p>The fan can use the automatic min/max range during tuning. The result appears in b0, w0, and wc below.</p>
-        </article>
-        <article class="memo-card">
-          <h3>Fuzzy memo</h3>
-          <p>
-            Fuzzy control uses BT error, RoR error, and dT to make small heater/fan increments. Empty-roaster data should set the input
-            ranges and output step sizes before using it on a roast.
-          </p>
-          <p>Heater is the main energy actuator. Fan changes are deliberately smaller and slew-limited.</p>
-        </article>
-        <article class="memo-card">
-          <h3>MPC memo</h3>
-          <p>
-            MPC uses a lightweight 2x2 model from heater/fan to BT/ET. BT tracking gets the strongest weight; move penalties keep heater
-            and fan from thrashing.
-          </p>
-          <p>No-bean identification seeds the model, then runtime scheduling handles fan and heat operating-point changes.</p>
-        </article>
-        <article class="memo-card">
-          <h3>No-bean memo</h3>
-          <p>
-            Identification runs the empty machine only: baseline, heater step at fixed fan, then fan step at fixed heat. It estimates lag,
-            gains, time constants, and starter ADRC values.
-          </p>
-          <p>Those values are seeds. Bean-loaded roasting should still use conservative schedules and dT behavior.</p>
+          <h3>{controlMode.toUpperCase()} tuning</h3>
+          <p>{modeMemo(controlMode)}</p>
+          <p>No-bean tuning is the default. The bean-loaded relay/step routine is available only when the option below is enabled.</p>
         </article>
       </div>
       <div class="controller-diagnostics">
-        <h3>Autotune values</h3>
+        <h3>Tuning values</h3>
         <div class="pid-grid">
           <span>Kp {formatValue(lastMessage?.pidKpActive ?? kp, 4)}</span>
           <span>Ki {formatValue(lastMessage?.pidKiActive ?? ki, 4)}</span>
@@ -368,6 +338,8 @@ export function AutotuneApp() {
           <span>MPC horizon {formatValue(lastMessage?.mpcHorizon ?? mpcHorizon, 0)}</span>
           <span>No-bean {lastMessage?.noBeanIdentificationState ?? "idle"} {formatValue(lastMessage?.noBeanIdentificationElapsedSec, 1)}s</span>
           <span>No-bean lag {formatValue(lastMessage?.noBeanLagSec, 2)}s</span>
+          <span>No-bean H gain {formatValue(lastMessage?.noBeanGainTbPerHeater, 4)} / {formatValue(lastMessage?.noBeanGainTePerHeater, 4)}</span>
+          <span>No-bean F gain {formatValue(lastMessage?.noBeanGainTbPerFan, 4)} / {formatValue(lastMessage?.noBeanGainTePerFan, 4)}</span>
           <span>No-bean ADRC {formatValue(lastMessage?.noBeanSuggestedAdrcB0, 4)} / {formatValue(lastMessage?.noBeanSuggestedAdrcW0, 3)} / {formatValue(lastMessage?.noBeanSuggestedAdrcWc, 3)}</span>
         </div>
       </div>
@@ -391,16 +363,22 @@ export function AutotuneApp() {
         >
           <option value="pid">PID</option><option value="adrc">ADRC</option><option value="fuzzy">Fuzzy</option><option value="mpc">MPC</option>
         </select>
-        <label>Autotune mode</label>
-        <select
-          value={autotuneMode}
-          onChange={(e) => {
-            autotuneModeDirty.current = true;
-            setAutotuneMode((e.target as HTMLSelectElement).value as AutotuneMode);
-          }}
-        >
-          <option value="pid">PID</option><option value="adrc">ADRC</option>
-        </select>
+        <label>Bean-loaded tune</label>
+        <input type="checkbox" checked={useBeanLoadedTune} onChange={(e) => setUseBeanLoadedTune(e.currentTarget.checked)} />
+        {useBeanLoadedTune && (
+          <>
+            <label>Legacy routine</label>
+            <select
+              value={legacyTuneMode}
+              onChange={(e) => {
+                legacyTuneModeDirty.current = true;
+                setLegacyTuneMode((e.target as HTMLSelectElement).value as LegacyTuneMode);
+              }}
+            >
+              <option value="pid">PID relay</option><option value="adrc">ADRC step</option>
+            </select>
+          </>
+        )}
         <label>Setpoint</label>
         <input type="number" value={setpoint} onInput={(e) => setSetpoint(Number((e.target as HTMLInputElement).value) || 0)} />
         <label>Fan</label>
@@ -742,16 +720,18 @@ export function AutotuneApp() {
             const fanBounds = normalizeFanBounds(controlFanMin, controlFanMax);
             setControlFanMin(fanBounds.min);
             setControlFanMax(fanBounds.max);
-            if (autotuneMode === "adrc") {
+            if (legacyTuneMode === "adrc") {
               adrcValuesDirty.current = false;
             }
+            const low = Math.min(fuzzyDTLow, fuzzyDTHigh);
+            const high = Math.max(fuzzyDTLow, fuzzyDTHigh);
             sendCommand({
               id: 1,
               command: "setPidControl",
               FanVal: fanSpeed,
               pidEnabled: false,
               controlMode,
-              autotuneMode,
+              autotuneMode: legacyTuneMode,
               pidTarget: target,
               pidTuneMethod: method,
               controlFanMin: fanBounds.min,
@@ -759,24 +739,58 @@ export function AutotuneApp() {
               adrcFanControlEnabled,
               adrcScheduleEnabled,
               setpoint,
+              controlHeaterSlewPerSec: heaterSlew,
+              controlFanSlewPerSec: fanSlew,
+              filterTbAlpha: clampUnit(tbFilterAlpha),
+              filterTeAlpha: clampUnit(teFilterAlpha),
+              filterDTAlpha: clampUnit(dtFilterAlpha),
+              filterRorAlpha: clampUnit(rorFilterAlpha),
+              pidDerivativeFilterAlpha: clampUnit(pidDerivativeAlpha),
+              pidSmithModelGain: pidSmithGain,
+              pidSmithModelTauSec: pidSmithTau,
+              fuzzyETScale,
+              fuzzyERorScale,
+              fuzzyDTLow: low,
+              fuzzyDTHigh: high,
+              fuzzyHeaterStepScale,
+              fuzzyFanStepScale,
+              mpcTbWeight,
+              mpcTeWeight,
+              mpcMoveHeaterWeight,
+              mpcMoveFanWeight,
+              mpcRorWeight,
+              mpcHorizon: Math.round(mpcHorizon),
               pidAutotuneMin: minHeaterPwm,
               pidAutotuneMax: maxHeaterPwm,
-              pidAutotune: autotuneMode === "pid",
-              adrcAutotune: autotuneMode === "adrc",
+              pidAutotune: useBeanLoadedTune && legacyTuneMode === "pid",
+              adrcAutotune: useBeanLoadedTune && legacyTuneMode === "adrc",
             });
-            setAutotuneLog([`Autotune requested (${autotuneMode.toUpperCase()})…`]);
+            if (!useBeanLoadedTune) {
+              sendCommand({
+                id: 1,
+                command: "startNoBeanIdentification",
+                fan: noBeanFan,
+                heaterLow: noBeanHeaterLow,
+                heaterHigh: noBeanHeaterHigh,
+                fanHigh: noBeanFanHigh,
+                baselineSec: noBeanBaselineSec,
+                stepSec: noBeanStepSec,
+              });
+            }
+            setAutotuneLog([useBeanLoadedTune ? `Bean-loaded tune requested (${legacyTuneMode.toUpperCase()})` : `No-bean tuning requested (${controlMode.toUpperCase()})`]);
             autotuneStopRequested.current = false;
           }}
         >
-          Start Autotune
+          Start Tuning
         </button>
         <button
           onClick={() => {
             autotuneStopRequested.current = true;
             sendCommand({ id: 1, command: "setPidControl", pidAutotune: false, adrcAutotune: false });
+            sendCommand({ id: 1, command: "stopNoBeanIdentification" });
           }}
         >
-          Stop
+          Stop Tuning
         </button>
         <button onClick={() => sendCommand({ id: 1, command: "setFan", value: 0 })}>Fan Off</button>
         <button
@@ -883,31 +897,6 @@ export function AutotuneApp() {
           onClick={() => {
             sendCommand({
               id: 1,
-              command: "startNoBeanIdentification",
-              fan: noBeanFan,
-              heaterLow: noBeanHeaterLow,
-              heaterHigh: noBeanHeaterHigh,
-              fanHigh: noBeanFanHigh,
-              baselineSec: noBeanBaselineSec,
-              stepSec: noBeanStepSec,
-            });
-            setAutotuneLog((prev) => [...prev.slice(-24), "No-bean identification started"]);
-          }}
-        >
-          Start No-Bean
-        </button>
-        <button
-          onClick={() => {
-            sendCommand({ id: 1, command: "stopNoBeanIdentification" });
-            setAutotuneLog((prev) => [...prev.slice(-24), "No-bean identification stopped"]);
-          }}
-        >
-          Stop No-Bean
-        </button>
-        <button
-          onClick={() => {
-            sendCommand({
-              id: 1,
               command: "setPidControl",
               pidEnabled: false,
               pidDelayFan: delayFan,
@@ -943,6 +932,19 @@ export function AutotuneApp() {
 
 function formatValue(value: number | null | undefined, digits = 2) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "N/A";
+}
+
+function modeMemo(mode: ControlMode) {
+  switch (mode) {
+    case "adrc":
+      return "Empty-roaster tuning measures delay and slope, then seeds b0, observer bandwidth, controller bandwidth, and the fan/heat schedule.";
+    case "fuzzy":
+      return "Empty-roaster tuning seeds BT error range, RoR error range, dT window, and conservative heater/fan step sizes.";
+    case "mpc":
+      return "Empty-roaster tuning seeds the 2x2 BT/ET model from heater and fan response, while the weights below shape tracking versus smooth commands.";
+    default:
+      return "Empty-roaster tuning measures command lag and coarse thermal response for PID and the Smith predictor.";
+  }
 }
 
 function normalizeFanBounds(min: number, max: number) {
