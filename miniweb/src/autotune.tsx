@@ -6,14 +6,12 @@ import { sendWsCommand, useSocketState } from "./websocket";
 type PidTarget = "BT" | "ET" | "simBT";
 type PidMethod = "ziegler-nichols" | "tyreus-luyben" | "pessen-integral" | "no-overshoot";
 type ControlMode = "pid" | "adrc" | "fuzzy" | "mpc";
-type LegacyTuneMode = "pid" | "adrc";
 
 export function AutotuneApp() {
   const { lastMessage } = useSocketState();
   const [target, setTarget] = useState<PidTarget>("BT");
   const [method, setMethod] = useState<PidMethod>("ziegler-nichols");
   const [controlMode, setControlMode] = useState<ControlMode>("pid");
-  const [legacyTuneMode, setLegacyTuneMode] = useState<LegacyTuneMode>("pid");
   const [useBeanLoadedTune, setUseBeanLoadedTune] = useState(false);
   const [setpoint, setSetpoint] = useState(20);
   const [fanSpeed, setFanSpeed] = useState(50);
@@ -77,7 +75,6 @@ export function AutotuneApp() {
   const fuzzyValuesDirty = useRef(false);
   const mpcValuesDirty = useRef(false);
   const controlModeDirty = useRef(false);
-  const legacyTuneModeDirty = useRef(false);
 
   const sendCommand = (data: Record<string, unknown>) => {
     const authToken = getAdminSecret();
@@ -103,14 +100,6 @@ export function AutotuneApp() {
         controlModeDirty.current = false;
       }
     }
-    if (lastMessage.autotuneMode === "pid" || lastMessage.autotuneMode === "adrc") {
-      if (!legacyTuneModeDirty.current) {
-        setLegacyTuneMode(lastMessage.autotuneMode);
-      } else if (lastMessage.autotuneMode === legacyTuneMode) {
-        legacyTuneModeDirty.current = false;
-      }
-    }
-
     if (
       lastMessage.pidAutotune &&
       typeof lastMessage.pidAutotuneCrossings === "number" &&
@@ -271,7 +260,6 @@ export function AutotuneApp() {
     adrcScheduleEnabled,
     adrcW0,
     adrcWc,
-    legacyTuneMode,
     controlFanMax,
     controlFanMin,
     controlMode,
@@ -288,12 +276,15 @@ export function AutotuneApp() {
     typeof lastMessage?.pidDelayMeasureElapsedSec === "number" ? lastMessage.pidDelayMeasureElapsedSec.toFixed(1) : "0.0";
   const measuredDelaySec =
     typeof lastMessage?.pidMeasuredProcessDelaySec === "number" ? lastMessage.pidMeasuredProcessDelaySec : processDelaySec;
+  const supportsBeanLoadedTune = controlMode === "pid" || controlMode === "adrc";
+  const beanLoadedTuneActive = useBeanLoadedTune && supportsBeanLoadedTune;
+  const beanTuneMode = controlMode === "adrc" ? "adrc" : "pid";
   const noBeanState = lastMessage?.noBeanIdentificationState ?? "idle";
   const noBeanRunning = noBeanState === "baseline" || noBeanState === "heater_step" || noBeanState === "fan_step";
   const legacyTuneRunning = Boolean(lastMessage?.pidAutotune || lastMessage?.adrcAutotune);
   const isTuneRunning = noBeanRunning || legacyTuneRunning;
-  const tuneProgress = useBeanLoadedTune
-    ? legacyTuneMode === "adrc"
+  const tuneProgress = beanLoadedTuneActive
+    ? beanTuneMode === "adrc"
       ? `ADRC ${lastMessage?.adrcAutotunePhase ?? "idle"} • ${formatValue(lastMessage?.adrcAutotuneElapsedSec, 1)}s`
       : `Crossings ${lastMessage?.pidAutotuneCrossings ?? 0}/${lastMessage?.pidAutotuneTargetCrossings ?? "?"}`
     : `${noBeanState} • ${formatValue(lastMessage?.noBeanIdentificationElapsedSec, 1)}s`;
@@ -357,26 +348,23 @@ export function AutotuneApp() {
         <select
           value={controlMode}
           onChange={(e) => {
+            const nextMode = (e.target as HTMLSelectElement).value as ControlMode;
             controlModeDirty.current = true;
-            setControlMode((e.target as HTMLSelectElement).value as ControlMode);
+            setControlMode(nextMode);
+            if (nextMode === "fuzzy" || nextMode === "mpc") {
+              setUseBeanLoadedTune(false);
+            }
           }}
         >
           <option value="pid">PID</option><option value="adrc">ADRC</option><option value="fuzzy">Fuzzy</option><option value="mpc">MPC</option>
         </select>
-        <label>Bean-loaded tune</label>
-        <input type="checkbox" checked={useBeanLoadedTune} onChange={(e) => setUseBeanLoadedTune(e.currentTarget.checked)} />
-        {useBeanLoadedTune && (
+        {supportsBeanLoadedTune && (
           <>
-            <label>Legacy routine</label>
-            <select
-              value={legacyTuneMode}
-              onChange={(e) => {
-                legacyTuneModeDirty.current = true;
-                setLegacyTuneMode((e.target as HTMLSelectElement).value as LegacyTuneMode);
-              }}
-            >
-              <option value="pid">PID relay</option><option value="adrc">ADRC step</option>
-            </select>
+            <label>Bean-loaded tune</label>
+            <label class="checkbox-row">
+              <input type="checkbox" checked={useBeanLoadedTune} onChange={(e) => setUseBeanLoadedTune(e.currentTarget.checked)} />
+              <span>{controlMode === "adrc" ? "ADRC step" : "PID relay"}</span>
+            </label>
           </>
         )}
         <label>Setpoint</label>
@@ -720,7 +708,7 @@ export function AutotuneApp() {
             const fanBounds = normalizeFanBounds(controlFanMin, controlFanMax);
             setControlFanMin(fanBounds.min);
             setControlFanMax(fanBounds.max);
-            if (legacyTuneMode === "adrc") {
+            if (beanTuneMode === "adrc") {
               adrcValuesDirty.current = false;
             }
             const low = Math.min(fuzzyDTLow, fuzzyDTHigh);
@@ -731,7 +719,7 @@ export function AutotuneApp() {
               FanVal: fanSpeed,
               pidEnabled: false,
               controlMode,
-              autotuneMode: legacyTuneMode,
+              autotuneMode: beanTuneMode,
               pidTarget: target,
               pidTuneMethod: method,
               controlFanMin: fanBounds.min,
@@ -762,10 +750,10 @@ export function AutotuneApp() {
               mpcHorizon: Math.round(mpcHorizon),
               pidAutotuneMin: minHeaterPwm,
               pidAutotuneMax: maxHeaterPwm,
-              pidAutotune: useBeanLoadedTune && legacyTuneMode === "pid",
-              adrcAutotune: useBeanLoadedTune && legacyTuneMode === "adrc",
+              pidAutotune: beanLoadedTuneActive && beanTuneMode === "pid",
+              adrcAutotune: beanLoadedTuneActive && beanTuneMode === "adrc",
             });
-            if (!useBeanLoadedTune) {
+            if (!beanLoadedTuneActive) {
               sendCommand({
                 id: 1,
                 command: "startNoBeanIdentification",
@@ -777,7 +765,7 @@ export function AutotuneApp() {
                 stepSec: noBeanStepSec,
               });
             }
-            setAutotuneLog([useBeanLoadedTune ? `Bean-loaded tune requested (${legacyTuneMode.toUpperCase()})` : `No-bean tuning requested (${controlMode.toUpperCase()})`]);
+            setAutotuneLog([beanLoadedTuneActive ? `Bean-loaded tune requested (${beanTuneMode.toUpperCase()})` : `No-bean tuning requested (${controlMode.toUpperCase()})`]);
             autotuneStopRequested.current = false;
           }}
         >
