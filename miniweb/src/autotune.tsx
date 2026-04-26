@@ -30,6 +30,34 @@ export function AutotuneApp() {
   const [adrcB0, setAdrcB0] = useState(0.02);
   const [adrcW0, setAdrcW0] = useState(1.0);
   const [adrcWc, setAdrcWc] = useState(0.25);
+  const [adrcScheduleEnabled, setAdrcScheduleEnabled] = useState(true);
+  const [heaterSlew, setHeaterSlew] = useState(25);
+  const [fanSlew, setFanSlew] = useState(12);
+  const [tbFilterAlpha, setTbFilterAlpha] = useState(0.25);
+  const [teFilterAlpha, setTeFilterAlpha] = useState(0.25);
+  const [dtFilterAlpha, setDTFilterAlpha] = useState(0.25);
+  const [rorFilterAlpha, setRorFilterAlpha] = useState(0.2);
+  const [pidDerivativeAlpha, setPidDerivativeAlpha] = useState(0.3);
+  const [pidSmithGain, setPidSmithGain] = useState(0.02);
+  const [pidSmithTau, setPidSmithTau] = useState(20);
+  const [fuzzyETScale, setFuzzyETScale] = useState(20);
+  const [fuzzyERorScale, setFuzzyERorScale] = useState(20);
+  const [fuzzyDTLow, setFuzzyDTLow] = useState(10);
+  const [fuzzyDTHigh, setFuzzyDTHigh] = useState(70);
+  const [fuzzyHeaterStepScale, setFuzzyHeaterStepScale] = useState(8);
+  const [fuzzyFanStepScale, setFuzzyFanStepScale] = useState(5);
+  const [mpcTbWeight, setMpcTbWeight] = useState(1);
+  const [mpcTeWeight, setMpcTeWeight] = useState(0.1);
+  const [mpcMoveHeaterWeight, setMpcMoveHeaterWeight] = useState(0.35);
+  const [mpcMoveFanWeight, setMpcMoveFanWeight] = useState(1.2);
+  const [mpcRorWeight, setMpcRorWeight] = useState(0.1);
+  const [mpcHorizon, setMpcHorizon] = useState(8);
+  const [noBeanFan, setNoBeanFan] = useState(50);
+  const [noBeanHeaterLow, setNoBeanHeaterLow] = useState(0);
+  const [noBeanHeaterHigh, setNoBeanHeaterHigh] = useState(60);
+  const [noBeanFanHigh, setNoBeanFanHigh] = useState(70);
+  const [noBeanBaselineSec, setNoBeanBaselineSec] = useState(15);
+  const [noBeanStepSec, setNoBeanStepSec] = useState(35);
   const [history, setHistory] = useState<Array<{ ET: number; BT: number; simBT: number }>>([]);
   const [autotuneLog, setAutotuneLog] = useState<string[]>([]);
   const lastCrossing = useRef(-1);
@@ -40,8 +68,13 @@ export function AutotuneApp() {
   const autotuneBoundsDirty = useRef(false);
   const controlFanBoundsDirty = useRef(false);
   const adrcFanControlDirty = useRef(false);
+  const adrcScheduleDirty = useRef(false);
   const delayInputsDirty = useRef(false);
   const adrcValuesDirty = useRef(false);
+  const frameworkValuesDirty = useRef(false);
+  const pidSmithValuesDirty = useRef(false);
+  const fuzzyValuesDirty = useRef(false);
+  const mpcValuesDirty = useRef(false);
   const controlModeDirty = useRef(false);
   const autotuneModeDirty = useRef(false);
 
@@ -176,6 +209,42 @@ export function AutotuneApp() {
         adrcFanControlDirty.current = false;
       }
     }
+    if (typeof lastMessage.adrcScheduleEnabled === "boolean") {
+      if (!adrcScheduleDirty.current) {
+        setAdrcScheduleEnabled(lastMessage.adrcScheduleEnabled);
+      } else if (lastMessage.adrcScheduleEnabled === adrcScheduleEnabled) {
+        adrcScheduleDirty.current = false;
+      }
+    }
+    if (!frameworkValuesDirty.current) {
+      if (typeof lastMessage.controlHeaterSlewPerSec === "number") setHeaterSlew(lastMessage.controlHeaterSlewPerSec);
+      if (typeof lastMessage.controlFanSlewPerSec === "number") setFanSlew(lastMessage.controlFanSlewPerSec);
+      if (typeof lastMessage.filterTbAlpha === "number") setTbFilterAlpha(lastMessage.filterTbAlpha);
+      if (typeof lastMessage.filterTeAlpha === "number") setTeFilterAlpha(lastMessage.filterTeAlpha);
+      if (typeof lastMessage.filterDTAlpha === "number") setDTFilterAlpha(lastMessage.filterDTAlpha);
+      if (typeof lastMessage.filterRorAlpha === "number") setRorFilterAlpha(lastMessage.filterRorAlpha);
+    }
+    if (!pidSmithValuesDirty.current) {
+      if (typeof lastMessage.pidDerivativeFilterAlpha === "number") setPidDerivativeAlpha(lastMessage.pidDerivativeFilterAlpha);
+      if (typeof lastMessage.pidSmithModelGain === "number") setPidSmithGain(lastMessage.pidSmithModelGain);
+      if (typeof lastMessage.pidSmithModelTauSec === "number") setPidSmithTau(lastMessage.pidSmithModelTauSec);
+    }
+    if (!fuzzyValuesDirty.current) {
+      if (typeof lastMessage.fuzzyETScale === "number") setFuzzyETScale(lastMessage.fuzzyETScale);
+      if (typeof lastMessage.fuzzyERorScale === "number") setFuzzyERorScale(lastMessage.fuzzyERorScale);
+      if (typeof lastMessage.fuzzyDTLow === "number") setFuzzyDTLow(lastMessage.fuzzyDTLow);
+      if (typeof lastMessage.fuzzyDTHigh === "number") setFuzzyDTHigh(lastMessage.fuzzyDTHigh);
+      if (typeof lastMessage.fuzzyHeaterStepScale === "number") setFuzzyHeaterStepScale(lastMessage.fuzzyHeaterStepScale);
+      if (typeof lastMessage.fuzzyFanStepScale === "number") setFuzzyFanStepScale(lastMessage.fuzzyFanStepScale);
+    }
+    if (!mpcValuesDirty.current) {
+      if (typeof lastMessage.mpcTbWeight === "number") setMpcTbWeight(lastMessage.mpcTbWeight);
+      if (typeof lastMessage.mpcTeWeight === "number") setMpcTeWeight(lastMessage.mpcTeWeight);
+      if (typeof lastMessage.mpcMoveHeaterWeight === "number") setMpcMoveHeaterWeight(lastMessage.mpcMoveHeaterWeight);
+      if (typeof lastMessage.mpcMoveFanWeight === "number") setMpcMoveFanWeight(lastMessage.mpcMoveFanWeight);
+      if (typeof lastMessage.mpcRorWeight === "number") setMpcRorWeight(lastMessage.mpcRorWeight);
+      if (typeof lastMessage.mpcHorizon === "number") setMpcHorizon(lastMessage.mpcHorizon);
+    }
     if (typeof lastMessage.pidDelayFan === "number" && typeof lastMessage.pidDelayHeater === "number") {
       if (!delayInputsDirty.current) {
         setDelayFan(lastMessage.pidDelayFan);
@@ -198,6 +267,7 @@ export function AutotuneApp() {
   }, [
     adrcB0,
     adrcFanControlEnabled,
+    adrcScheduleEnabled,
     adrcW0,
     adrcWc,
     autotuneMode,
@@ -247,6 +317,30 @@ export function AutotuneApp() {
           </p>
           <p>The fan can use the automatic min/max range during tuning. The result appears in b0, w0, and wc below.</p>
         </article>
+        <article class="memo-card">
+          <h3>Fuzzy memo</h3>
+          <p>
+            Fuzzy control uses BT error, RoR error, and dT to make small heater/fan increments. Empty-roaster data should set the input
+            ranges and output step sizes before using it on a roast.
+          </p>
+          <p>Heater is the main energy actuator. Fan changes are deliberately smaller and slew-limited.</p>
+        </article>
+        <article class="memo-card">
+          <h3>MPC memo</h3>
+          <p>
+            MPC uses a lightweight 2x2 model from heater/fan to BT/ET. BT tracking gets the strongest weight; move penalties keep heater
+            and fan from thrashing.
+          </p>
+          <p>No-bean identification seeds the model, then runtime scheduling handles fan and heat operating-point changes.</p>
+        </article>
+        <article class="memo-card">
+          <h3>No-bean memo</h3>
+          <p>
+            Identification runs the empty machine only: baseline, heater step at fixed fan, then fan step at fixed heat. It estimates lag,
+            gains, time constants, and starter ADRC values.
+          </p>
+          <p>Those values are seeds. Bean-loaded roasting should still use conservative schedules and dT behavior.</p>
+        </article>
       </div>
       <div class="controller-diagnostics">
         <h3>Autotune values</h3>
@@ -263,6 +357,18 @@ export function AutotuneApp() {
           <span>ADRC slope {formatValue(lastMessage?.adrcAutotunePeakSlope, 4)} °C/s</span>
           <span>ADRC baseline {formatValue(lastMessage?.adrcAutotuneBaselineTemp, 2)} °C</span>
           <span>Step {formatValue(lastMessage?.adrcAutotuneHeaterStep, 0)}%</span>
+          <span>dT {formatValue(lastMessage?.dT, 2)} °C</span>
+          <span>RoR {formatValue(lastMessage?.RoR, 2)} °C/min</span>
+          <span>Alarms {lastMessage?.controlAlarmSummary ?? "none"}</span>
+          <span>Fuzzy eT scale {formatValue(lastMessage?.fuzzyETScale ?? fuzzyETScale, 2)}</span>
+          <span>Fuzzy eRoR scale {formatValue(lastMessage?.fuzzyERorScale ?? fuzzyERorScale, 2)}</span>
+          <span>Fuzzy dT {formatValue(lastMessage?.fuzzyDTLow ?? fuzzyDTLow, 1)} / {formatValue(lastMessage?.fuzzyDTHigh ?? fuzzyDTHigh, 1)}</span>
+          <span>MPC BT/ET weight {formatValue(lastMessage?.mpcTbWeight ?? mpcTbWeight, 2)} / {formatValue(lastMessage?.mpcTeWeight ?? mpcTeWeight, 2)}</span>
+          <span>MPC move H/F {formatValue(lastMessage?.mpcMoveHeaterWeight ?? mpcMoveHeaterWeight, 2)} / {formatValue(lastMessage?.mpcMoveFanWeight ?? mpcMoveFanWeight, 2)}</span>
+          <span>MPC horizon {formatValue(lastMessage?.mpcHorizon ?? mpcHorizon, 0)}</span>
+          <span>No-bean {lastMessage?.noBeanIdentificationState ?? "idle"} {formatValue(lastMessage?.noBeanIdentificationElapsedSec, 1)}s</span>
+          <span>No-bean lag {formatValue(lastMessage?.noBeanLagSec, 2)}s</span>
+          <span>No-bean ADRC {formatValue(lastMessage?.noBeanSuggestedAdrcB0, 4)} / {formatValue(lastMessage?.noBeanSuggestedAdrcW0, 3)} / {formatValue(lastMessage?.noBeanSuggestedAdrcWc, 3)}</span>
         </div>
       </div>
       <div class="form-grid">
@@ -378,6 +484,236 @@ export function AutotuneApp() {
             }}
           />
         </div>
+        <label>ADRC schedule</label>
+        <input
+          checked={adrcScheduleEnabled}
+          type="checkbox"
+          onChange={(e) => {
+            adrcScheduleDirty.current = true;
+            setAdrcScheduleEnabled(e.currentTarget.checked);
+          }}
+        />
+        <label>Slew heater / fan</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            value={heaterSlew}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setHeaterSlew(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={fanSlew}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setFanSlew(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>Filter BT / ET</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            step="0.01"
+            value={tbFilterAlpha}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setTbFilterAlpha(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={teFilterAlpha}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setTeFilterAlpha(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>Filter dT / RoR</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            step="0.01"
+            value={dtFilterAlpha}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setDTFilterAlpha(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={rorFilterAlpha}
+            onInput={(e) => {
+              frameworkValuesDirty.current = true;
+              setRorFilterAlpha(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>PID derivative / Smith</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            step="0.01"
+            value={pidDerivativeAlpha}
+            onInput={(e) => {
+              pidSmithValuesDirty.current = true;
+              setPidDerivativeAlpha(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.001"
+            value={pidSmithGain}
+            onInput={(e) => {
+              pidSmithValuesDirty.current = true;
+              setPidSmithGain(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={pidSmithTau}
+            onInput={(e) => {
+              pidSmithValuesDirty.current = true;
+              setPidSmithTau(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>Fuzzy eT / eRoR</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            value={fuzzyETScale}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyETScale(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={fuzzyERorScale}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyERorScale(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>Fuzzy dT low / high</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            value={fuzzyDTLow}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyDTLow(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={fuzzyDTHigh}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyDTHigh(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>Fuzzy heater / fan step</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            value={fuzzyHeaterStepScale}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyHeaterStepScale(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={fuzzyFanStepScale}
+            onInput={(e) => {
+              fuzzyValuesDirty.current = true;
+              setFuzzyFanStepScale(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>MPC BT / ET / RoR</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            step="0.01"
+            value={mpcTbWeight}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcTbWeight(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={mpcTeWeight}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcTeWeight(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={mpcRorWeight}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcRorWeight(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>MPC move H / F / horizon</label>
+        <div class="pid-inline-inputs">
+          <input
+            type="number"
+            step="0.01"
+            value={mpcMoveHeaterWeight}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcMoveHeaterWeight(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            step="0.01"
+            value={mpcMoveFanWeight}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcMoveFanWeight(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+          <input
+            type="number"
+            value={mpcHorizon}
+            onInput={(e) => {
+              mpcValuesDirty.current = true;
+              setMpcHorizon(Number((e.target as HTMLInputElement).value) || 0);
+            }}
+          />
+        </div>
+        <label>No-bean fan / fan step</label>
+        <div class="pid-inline-inputs">
+          <input type="number" value={noBeanFan} onInput={(e) => setNoBeanFan(Number((e.target as HTMLInputElement).value) || 0)} />
+          <input type="number" value={noBeanFanHigh} onInput={(e) => setNoBeanFanHigh(Number((e.target as HTMLInputElement).value) || 0)} />
+        </div>
+        <label>No-bean heat low / high</label>
+        <div class="pid-inline-inputs">
+          <input type="number" value={noBeanHeaterLow} onInput={(e) => setNoBeanHeaterLow(Number((e.target as HTMLInputElement).value) || 0)} />
+          <input type="number" value={noBeanHeaterHigh} onInput={(e) => setNoBeanHeaterHigh(Number((e.target as HTMLInputElement).value) || 0)} />
+        </div>
+        <label>No-bean baseline / step s</label>
+        <div class="pid-inline-inputs">
+          <input type="number" value={noBeanBaselineSec} onInput={(e) => setNoBeanBaselineSec(Number((e.target as HTMLInputElement).value) || 0)} />
+          <input type="number" value={noBeanStepSec} onInput={(e) => setNoBeanStepSec(Number((e.target as HTMLInputElement).value) || 0)} />
+        </div>
         <label>Delay fan / heater</label>
         <div class="pid-inline-inputs">
           <input
@@ -421,6 +757,7 @@ export function AutotuneApp() {
               controlFanMin: fanBounds.min,
               controlFanMax: fanBounds.max,
               adrcFanControlEnabled,
+              adrcScheduleEnabled,
               setpoint,
               pidAutotuneMin: minHeaterPwm,
               pidAutotuneMax: maxHeaterPwm,
@@ -467,6 +804,7 @@ export function AutotuneApp() {
               controlFanMin: fanBounds.min,
               controlFanMax: fanBounds.max,
               adrcFanControlEnabled,
+              adrcScheduleEnabled,
               adrcB0,
               adrcW0,
               adrcWc,
@@ -476,6 +814,95 @@ export function AutotuneApp() {
           }}
         >
           Apply ADRC
+        </button>
+        <button
+          onClick={() => {
+            sendCommand({
+              id: 1,
+              command: "setPidControl",
+              controlHeaterSlewPerSec: heaterSlew,
+              controlFanSlewPerSec: fanSlew,
+              filterTbAlpha: clampUnit(tbFilterAlpha),
+              filterTeAlpha: clampUnit(teFilterAlpha),
+              filterDTAlpha: clampUnit(dtFilterAlpha),
+              filterRorAlpha: clampUnit(rorFilterAlpha),
+              pidDerivativeFilterAlpha: clampUnit(pidDerivativeAlpha),
+              pidSmithModelGain: pidSmithGain,
+              pidSmithModelTauSec: pidSmithTau,
+            });
+            frameworkValuesDirty.current = true;
+            pidSmithValuesDirty.current = true;
+            setAutotuneLog((prev) => [...prev.slice(-24), "Applied shared filters, slew limits, and Smith/PID model values"]);
+          }}
+        >
+          Apply Shared
+        </button>
+        <button
+          onClick={() => {
+            const low = Math.min(fuzzyDTLow, fuzzyDTHigh);
+            const high = Math.max(fuzzyDTLow, fuzzyDTHigh);
+            setFuzzyDTLow(low);
+            setFuzzyDTHigh(high);
+            sendCommand({
+              id: 1,
+              command: "setPidControl",
+              controlMode: "fuzzy",
+              fuzzyETScale,
+              fuzzyERorScale,
+              fuzzyDTLow: low,
+              fuzzyDTHigh: high,
+              fuzzyHeaterStepScale,
+              fuzzyFanStepScale,
+            });
+            fuzzyValuesDirty.current = true;
+            setAutotuneLog((prev) => [...prev.slice(-24), "Applied fuzzy ranges and output scaling"]);
+          }}
+        >
+          Apply Fuzzy
+        </button>
+        <button
+          onClick={() => {
+            sendCommand({
+              id: 1,
+              command: "setPidControl",
+              controlMode: "mpc",
+              mpcTbWeight,
+              mpcTeWeight,
+              mpcMoveHeaterWeight,
+              mpcMoveFanWeight,
+              mpcRorWeight,
+              mpcHorizon: Math.round(mpcHorizon),
+            });
+            mpcValuesDirty.current = true;
+            setAutotuneLog((prev) => [...prev.slice(-24), "Applied MPC tracking weights, move penalties, and horizon"]);
+          }}
+        >
+          Apply MPC
+        </button>
+        <button
+          onClick={() => {
+            sendCommand({
+              id: 1,
+              command: "startNoBeanIdentification",
+              fan: noBeanFan,
+              heaterLow: noBeanHeaterLow,
+              heaterHigh: noBeanHeaterHigh,
+              fanHigh: noBeanFanHigh,
+              baselineSec: noBeanBaselineSec,
+              stepSec: noBeanStepSec,
+            });
+            setAutotuneLog((prev) => [...prev.slice(-24), "No-bean identification started"]);
+          }}
+        >
+          Start No-Bean
+        </button>
+        <button
+          onClick={() => {
+            sendCommand({ id: 1, command: "stopNoBeanIdentification" });
+            setAutotuneLog((prev) => [...prev.slice(-24), "No-bean identification stopped"]);
+          }}
+        >
+          Stop No-Bean
         </button>
         <button
           onClick={() => {
@@ -529,4 +956,8 @@ function normalizeFanBounds(min: number, max: number) {
 
 function clampPercent(value: number) {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+}
+
+function clampUnit(value: number) {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 }

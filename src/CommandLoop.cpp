@@ -80,6 +80,12 @@ double fuzzyDTLow = 10.0;
 double fuzzyDTHigh = 70.0;
 double fuzzyHeaterStepScale = 8.0;
 double fuzzyFanStepScale = 5.0;
+double mpcTbWeight = 1.0;
+double mpcTeWeight = 0.10;
+double mpcMoveHeaterWeight = 0.35;
+double mpcMoveFanWeight = 1.20;
+double mpcRorWeight = 0.10;
+uint8_t mpcHorizon = 8;
 
 double pidSetpoint = 20.0;
 bool pidEnabled = true;
@@ -644,6 +650,17 @@ control::FuzzyParams activeFuzzyParams() {
   return params;
 }
 
+control::MpcModel activeMpcModel() {
+  control::MpcModel model = mpcSchedule.lookup(getFanSpeed(), getHeaterPower());
+  model.tbWeight = mpcTbWeight;
+  model.teWeight = mpcTeWeight;
+  model.moveHeaterWeight = mpcMoveHeaterWeight;
+  model.moveFanWeight = mpcMoveFanWeight;
+  model.rorWeight = mpcRorWeight;
+  model.horizon = mpcHorizon;
+  return model;
+}
+
 void applyControlOutput(const control::ControlOutput &output) {
   double heaterCommand = output.heater;
   double fanCommand = std::isfinite(output.fan) ? output.fan : getFanSpeed();
@@ -852,6 +869,54 @@ bool validateCommandSchema(AsyncWebSocketClient *client, JsonDocument &doc, cons
     }
     if (!doc["filterRorAlpha"].isNull() && !doc["filterRorAlpha"].is<double>()) {
       client->text("{\"error\":\"invalid schema: filterRorAlpha must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyETScale"].isNull() && !doc["fuzzyETScale"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyETScale must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyERorScale"].isNull() && !doc["fuzzyERorScale"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyERorScale must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyDTLow"].isNull() && !doc["fuzzyDTLow"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyDTLow must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyDTHigh"].isNull() && !doc["fuzzyDTHigh"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyDTHigh must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyHeaterStepScale"].isNull() && !doc["fuzzyHeaterStepScale"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyHeaterStepScale must be numeric\"}");
+      return false;
+    }
+    if (!doc["fuzzyFanStepScale"].isNull() && !doc["fuzzyFanStepScale"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: fuzzyFanStepScale must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcTbWeight"].isNull() && !doc["mpcTbWeight"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: mpcTbWeight must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcTeWeight"].isNull() && !doc["mpcTeWeight"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: mpcTeWeight must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcMoveHeaterWeight"].isNull() && !doc["mpcMoveHeaterWeight"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: mpcMoveHeaterWeight must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcMoveFanWeight"].isNull() && !doc["mpcMoveFanWeight"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: mpcMoveFanWeight must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcRorWeight"].isNull() && !doc["mpcRorWeight"].is<double>()) {
+      client->text("{\"error\":\"invalid schema: mpcRorWeight must be numeric\"}");
+      return false;
+    }
+    if (!doc["mpcHorizon"].isNull() && !doc["mpcHorizon"].is<long>()) {
+      client->text("{\"error\":\"invalid schema: mpcHorizon must be numeric\"}");
       return false;
     }
   }
@@ -1350,6 +1415,59 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       if (filterChanged) {
         configureControlFramework();
       }
+      if (!doc["fuzzyETScale"].isNull()) {
+        fuzzyETScale = std::max(0.1, doc["fuzzyETScale"].as<double>());
+        preferences.putDouble("fuzzyETScale", fuzzyETScale);
+      }
+      if (!doc["fuzzyERorScale"].isNull()) {
+        fuzzyERorScale = std::max(0.1, doc["fuzzyERorScale"].as<double>());
+        preferences.putDouble("fuzzyERorScale", fuzzyERorScale);
+      }
+      if (!doc["fuzzyDTLow"].isNull()) {
+        fuzzyDTLow = doc["fuzzyDTLow"].as<double>();
+        preferences.putDouble("fuzzyDTLow", fuzzyDTLow);
+      }
+      if (!doc["fuzzyDTHigh"].isNull()) {
+        fuzzyDTHigh = doc["fuzzyDTHigh"].as<double>();
+        preferences.putDouble("fuzzyDTHigh", fuzzyDTHigh);
+      }
+      if (fuzzyDTLow > fuzzyDTHigh) {
+        double temp = fuzzyDTLow;
+        fuzzyDTLow = fuzzyDTHigh;
+        fuzzyDTHigh = temp;
+      }
+      if (!doc["fuzzyHeaterStepScale"].isNull()) {
+        fuzzyHeaterStepScale = std::max(0.1, doc["fuzzyHeaterStepScale"].as<double>());
+        preferences.putDouble("fuzzyHeatStep", fuzzyHeaterStepScale);
+      }
+      if (!doc["fuzzyFanStepScale"].isNull()) {
+        fuzzyFanStepScale = std::max(0.1, doc["fuzzyFanStepScale"].as<double>());
+        preferences.putDouble("fuzzyFanStep", fuzzyFanStepScale);
+      }
+      if (!doc["mpcTbWeight"].isNull()) {
+        mpcTbWeight = std::max(0.0, doc["mpcTbWeight"].as<double>());
+        preferences.putDouble("mpcTbWeight", mpcTbWeight);
+      }
+      if (!doc["mpcTeWeight"].isNull()) {
+        mpcTeWeight = std::max(0.0, doc["mpcTeWeight"].as<double>());
+        preferences.putDouble("mpcTeWeight", mpcTeWeight);
+      }
+      if (!doc["mpcMoveHeaterWeight"].isNull()) {
+        mpcMoveHeaterWeight = std::max(0.0, doc["mpcMoveHeaterWeight"].as<double>());
+        preferences.putDouble("mpcMoveHeat", mpcMoveHeaterWeight);
+      }
+      if (!doc["mpcMoveFanWeight"].isNull()) {
+        mpcMoveFanWeight = std::max(0.0, doc["mpcMoveFanWeight"].as<double>());
+        preferences.putDouble("mpcMoveFan", mpcMoveFanWeight);
+      }
+      if (!doc["mpcRorWeight"].isNull()) {
+        mpcRorWeight = std::max(0.0, doc["mpcRorWeight"].as<double>());
+        preferences.putDouble("mpcRorWeight", mpcRorWeight);
+      }
+      if (!doc["mpcHorizon"].isNull()) {
+        mpcHorizon = static_cast<uint8_t>(std::clamp<long>(doc["mpcHorizon"].as<long>(), 1, 20));
+        preferences.putLong("mpcHorizon", mpcHorizon);
+      }
       if (pidAutotuneRelayOutputLow > pidAutotuneRelayOutputHigh) {
         double temp = pidAutotuneRelayOutputLow;
         pidAutotuneRelayOutputLow = pidAutotuneRelayOutputHigh;
@@ -1558,6 +1676,18 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["filterTeAlpha"] = preprocessingTeAlpha;
       dataObj["filterDTAlpha"] = preprocessingDTAlpha;
       dataObj["filterRorAlpha"] = preprocessingRorAlpha;
+      dataObj["fuzzyETScale"] = fuzzyETScale;
+      dataObj["fuzzyERorScale"] = fuzzyERorScale;
+      dataObj["fuzzyDTLow"] = fuzzyDTLow;
+      dataObj["fuzzyDTHigh"] = fuzzyDTHigh;
+      dataObj["fuzzyHeaterStepScale"] = fuzzyHeaterStepScale;
+      dataObj["fuzzyFanStepScale"] = fuzzyFanStepScale;
+      dataObj["mpcTbWeight"] = mpcTbWeight;
+      dataObj["mpcTeWeight"] = mpcTeWeight;
+      dataObj["mpcMoveHeaterWeight"] = mpcMoveHeaterWeight;
+      dataObj["mpcMoveFanWeight"] = mpcMoveFanWeight;
+      dataObj["mpcRorWeight"] = mpcRorWeight;
+      dataObj["mpcHorizon"] = mpcHorizon;
       dataObj["noBeanIdentificationState"] = noBeanIdStateToString(noBeanIdState);
       dataObj["noBeanIdentificationElapsedSec"] =
           noBeanIdState == NoBeanIdState::IDLE ? 0.0 : (millis() - noBeanIdStartMs) / 1000.0;
@@ -1689,6 +1819,18 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
       dataObj["filterTeAlpha"] = preprocessingTeAlpha;
       dataObj["filterDTAlpha"] = preprocessingDTAlpha;
       dataObj["filterRorAlpha"] = preprocessingRorAlpha;
+      dataObj["fuzzyETScale"] = fuzzyETScale;
+      dataObj["fuzzyERorScale"] = fuzzyERorScale;
+      dataObj["fuzzyDTLow"] = fuzzyDTLow;
+      dataObj["fuzzyDTHigh"] = fuzzyDTHigh;
+      dataObj["fuzzyHeaterStepScale"] = fuzzyHeaterStepScale;
+      dataObj["fuzzyFanStepScale"] = fuzzyFanStepScale;
+      dataObj["mpcTbWeight"] = mpcTbWeight;
+      dataObj["mpcTeWeight"] = mpcTeWeight;
+      dataObj["mpcMoveHeaterWeight"] = mpcMoveHeaterWeight;
+      dataObj["mpcMoveFanWeight"] = mpcMoveFanWeight;
+      dataObj["mpcRorWeight"] = mpcRorWeight;
+      dataObj["mpcHorizon"] = mpcHorizon;
       dataObj["noBeanIdentificationState"] = noBeanIdStateToString(noBeanIdState);
       dataObj["noBeanIdentificationElapsedSec"] =
           noBeanIdState == NoBeanIdState::IDLE ? 0.0 : (millis() - noBeanIdStartMs) / 1000.0;
@@ -1817,6 +1959,23 @@ void setupMainLoop(AsyncWebSocket *ws) {
   preprocessingTeAlpha = std::clamp(preferences.getDouble("fltTeAlpha", 0.25), 0.0, 1.0);
   preprocessingDTAlpha = std::clamp(preferences.getDouble("fltDTAlpha", 0.25), 0.0, 1.0);
   preprocessingRorAlpha = std::clamp(preferences.getDouble("fltRorAlpha", 0.20), 0.0, 1.0);
+  fuzzyETScale = std::max(0.1, preferences.getDouble("fuzzyETScale", 20.0));
+  fuzzyERorScale = std::max(0.1, preferences.getDouble("fuzzyERorScale", 20.0));
+  fuzzyDTLow = preferences.getDouble("fuzzyDTLow", 10.0);
+  fuzzyDTHigh = preferences.getDouble("fuzzyDTHigh", 70.0);
+  if (fuzzyDTLow > fuzzyDTHigh) {
+    double temp = fuzzyDTLow;
+    fuzzyDTLow = fuzzyDTHigh;
+    fuzzyDTHigh = temp;
+  }
+  fuzzyHeaterStepScale = std::max(0.1, preferences.getDouble("fuzzyHeatStep", 8.0));
+  fuzzyFanStepScale = std::max(0.1, preferences.getDouble("fuzzyFanStep", 5.0));
+  mpcTbWeight = std::max(0.0, preferences.getDouble("mpcTbWeight", 1.0));
+  mpcTeWeight = std::max(0.0, preferences.getDouble("mpcTeWeight", 0.10));
+  mpcMoveHeaterWeight = std::max(0.0, preferences.getDouble("mpcMoveHeat", 0.35));
+  mpcMoveFanWeight = std::max(0.0, preferences.getDouble("mpcMoveFan", 1.20));
+  mpcRorWeight = std::max(0.0, preferences.getDouble("mpcRorWeight", 0.10));
+  mpcHorizon = static_cast<uint8_t>(std::clamp<long>(preferences.getLong("mpcHorizon", 8), 1, 20));
   controlTbSetpoint = pidSetpoint;
   pidAutotuneRelayOutputLow = std::clamp(preferences.getDouble("pidAutoMin", 0.0), 0.0, 100.0);
   pidAutotuneRelayOutputHigh = std::clamp(preferences.getDouble("pidAutoMax", 60.0), 0.0, 100.0);
@@ -2220,7 +2379,7 @@ void updatePidControl() {
     output = fuzzyController.update(request, activeFuzzyParams());
     break;
   case ControlMode::MPC:
-    output = mpcController.update(request, mpcSchedule.lookup(getFanSpeed(), getHeaterPower()));
+    output = mpcController.update(request, activeMpcModel());
     break;
   default:
     output = pidController.update(request, activePidParams());

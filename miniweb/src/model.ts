@@ -21,6 +21,9 @@ export type YaegerMessage = {
   pidTempSlope?: number;
   pidProcessDelaySec?: number;
   pidPredictorEnabled?: boolean;
+  pidDerivativeFilterAlpha?: number;
+  pidSmithModelGain?: number;
+  pidSmithModelTauSec?: number;
   pidEnabled?: boolean;
   pidDelayMeasureState?: "idle" | "stabilizing" | "heating" | "complete" | "failed";
   pidDelayMeasureElapsedSec?: number;
@@ -56,6 +59,8 @@ export type YaegerMessage = {
   pidKdActive?: number;
   controlFanMin?: number;
   controlFanMax?: number;
+  controlHeaterSlewPerSec?: number;
+  controlFanSlewPerSec?: number;
   dT?: number;
   RoR?: number;
   filteredBT?: number;
@@ -71,6 +76,10 @@ export type YaegerMessage = {
   controlFanSaturated?: boolean;
   controlPredictionTb?: number;
   controlPredictionTe?: number;
+  filterTbAlpha?: number;
+  filterTeAlpha?: number;
+  filterDTAlpha?: number;
+  filterRorAlpha?: number;
   adrcFanControlEnabled?: boolean;
   adrcScheduleEnabled?: boolean;
   adrcB0?: number;
@@ -86,6 +95,28 @@ export type YaegerMessage = {
   adrcAutotuneBaselineTemp?: number;
   adrcAutotuneHeaterStep?: number;
   adrcAutotuneBaselineSamples?: number;
+  fuzzyETScale?: number;
+  fuzzyERorScale?: number;
+  fuzzyDTLow?: number;
+  fuzzyDTHigh?: number;
+  fuzzyHeaterStepScale?: number;
+  fuzzyFanStepScale?: number;
+  mpcTbWeight?: number;
+  mpcTeWeight?: number;
+  mpcMoveHeaterWeight?: number;
+  mpcMoveFanWeight?: number;
+  mpcRorWeight?: number;
+  mpcHorizon?: number;
+  noBeanIdentificationState?: "idle" | "baseline" | "heater_step" | "fan_step" | "complete";
+  noBeanIdentificationElapsedSec?: number;
+  noBeanLagSec?: number;
+  noBeanTauTbSec?: number;
+  noBeanTauTeSec?: number;
+  noBeanGainTbPerHeater?: number;
+  noBeanGainTePerHeater?: number;
+  noBeanSuggestedAdrcB0?: number;
+  noBeanSuggestedAdrcW0?: number;
+  noBeanSuggestedAdrcWc?: number;
   emergencyStopActive?: boolean;
   id: number;
 }
